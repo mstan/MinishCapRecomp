@@ -1,0 +1,102 @@
+# ─────────────────────────────────────────────────────────────────────
+# User-provided cartridge ROMs (copyrighted; never commit).
+# See baserom.md for the SHA-1 of the known-good dumps.
+# ─────────────────────────────────────────────────────────────────────
+roms/
+*.gba
+*.GBA
+
+# ─────────────────────────────────────────────────────────────────────
+# Save files
+# ─────────────────────────────────────────────────────────────────────
+saves/
+*.sav
+*.srm
+*.eep
+
+# ─────────────────────────────────────────────────────────────────────
+# Vendored decomp / reference projects. zeldaret/tmc lives under
+# third_party/tmc/ and is read only by tools/import_tmc_symbols
+# (names + addresses; no C source enters the build). License
+# obligations stay with the upstream checkout.
+# ─────────────────────────────────────────────────────────────────────
+third_party/
+
+# ─────────────────────────────────────────────────────────────────────
+# Build output
+# ─────────────────────────────────────────────────────────────────────
+build/
+build-*/
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.tlog
+*.idb
+release-stage/
+MinishCapRecomp-windows-*.zip
+
+# ─────────────────────────────────────────────────────────────────────
+# Generated code (derivative of copyrighted ROM; regenerate locally).
+# CLAUDE.md "Generated C is never edited" applies here — the README
+# stays tracked so the directory exists in fresh clones.
+# ─────────────────────────────────────────────────────────────────────
+generated/*.c
+generated/*.cpp
+generated/*.h
+generated/*.json
+src/gen/
+
+# ─────────────────────────────────────────────────────────────────────
+# Ghidra project DB (large, machine-specific; only the README.md
+# inside ghidra/ is tracked).
+# ─────────────────────────────────────────────────────────────────────
+ghidra/*
+!ghidra/README.md
+!ghidra/.gitkeep
+
+# ─────────────────────────────────────────────────────────────────────
+# Diagnostic / triage artifacts. Diff dumps, frame snapshots, boot
+# traces — all regenerated on demand.
+# ─────────────────────────────────────────────────────────────────────
+_triage/
+*.log
+*.bmp
+*.png
+*.rgb
+boot_trace*.txt
+hw_trace.log
+
+# ─────────────────────────────────────────────────────────────────────
+# Local-only config overrides (per-developer, applied after game.toml).
+# ─────────────────────────────────────────────────────────────────────
+*.local.toml
+*.local.ini
+debug.local.ini
+
+# ─────────────────────────────────────────────────────────────────────
+# IDE / editor
+# ─────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.vs/
+*.vcxproj.user
+*.swp
+
+# ─────────────────────────────────────────────────────────────────────
+# OS noise
+# ─────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ─────────────────────────────────────────────────────────────────────
+# Python caches
+# ─────────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+
+# ─────────────────────────────────────────────────────────────────────
+# Claude auto-memory (per-user, never committed).
+# ─────────────────────────────────────────────────────────────────────
+memory/

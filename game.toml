@@ -1,0 +1,69 @@
+# game.toml — The Legend of Zelda: The Minish Cap (GBA)
+#
+# The runner reads this to decide which ROM to load, which region
+# config to layer in, where the entry point is, and what save chip
+# is expected. All fields are also reachable from the TCP debug
+# server so probes can sanity-check the loaded build.
+
+[game]
+name           = "The Legend of Zelda: The Minish Cap"
+short_name     = "minish_cap"
+# Default region; override at configure time. Each region's full
+# config lives in config/<region>.toml and is layered on top of this.
+default_region = "usa"
+
+# ── BIOS identity ────────────────────────────────────────────────────
+#
+# The GBA BIOS is real, executed code. The runner refuses to launch
+# without a hash-verified BIOS. See ../gbarecomp/PRINCIPLES.md
+# "BIOS is sacred" and ../gbarecomp/bios/README.md.
+[bios]
+path = "../gbarecomp/bios/gba_bios.bin"   # default; override via --bios
+sha1 = "300c20df6731a33952ded8c436f7f186d25d3492"
+
+# ── ROM identity ─────────────────────────────────────────────────────
+#
+# rom = absolute or relative path to the user's ROM image.
+# sha1 = expected SHA-1; if it doesn't match the runner refuses to
+#        launch (see CLAUDE.md "ROM hash gates everything").
+[rom]
+path = "minish_cap.gba"   # user-provided; not in this repo
+# sha1 is filled in per region in config/<region>.toml.
+
+# ── Recompiler entry & layout ───────────────────────────────────────
+#
+# Filled in once we've verified per-region values via gba_scan and
+# manual cross-check against the disassembly. Don't guess these.
+[recompiler]
+entry_point   = "0x08000000"   # cartridge ROM base; real entry is set
+                                # by the ROM header crt0 jump, which
+                                # gba_scan extracts.
+seeds         = "symbols/imported_symbols.tsv"
+boundaries    = "symbols/function_boundaries.tsv"
+out_dir       = "generated"
+strict        = true
+
+# ── Save chip ────────────────────────────────────────────────────────
+#
+# Minish Cap uses EEPROM. The exact size (4K vs 64K) is per-region;
+# the per-region config sets it.
+[save]
+type = "eeprom"            # one of: sram | flash512 | flash1m | eeprom
+
+# ── Runtime ─────────────────────────────────────────────────────────
+[runtime]
+debug_port    = 19842
+window_title  = "MinishCapRecomp"
+
+# ── Function table (dispatch hints) ─────────────────────────────────
+#
+# Discovered function addresses go here, grouped by ARM/THUMB mode.
+# We split because BX/BLX targets carry the mode bit and codegen needs
+# to know which entry signature to emit.
+#
+# Discovery is mechanical: tools/import_tmc_symbols extracts these
+# from the decomp's symbol output, and gba_recompile expands them
+# during code generation.
+[functions]
+arm   = []
+thumb = []

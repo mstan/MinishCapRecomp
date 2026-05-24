@@ -1,0 +1,15 @@
+# minishcap_usa.toml — region-specific overrides for the USA release.
+#
+# Layered on top of game.toml. Values left as TBD are filled in once
+# verified against the actual cartridge image and disassembly.
+
+[rom]
+sha1 = "TBD"        # placeholder; runner refuses to launch with TBD
+
+[save]
+type = "eeprom"     # 8 KB EEPROM on the USA cart
+size = "0x2000"
+
+# Per-region IRQ / DMA / timer quirks (if any) go here. Empty in the
+# scaffold; filled in once they're observed via oracle comparison.
+[quirks]
