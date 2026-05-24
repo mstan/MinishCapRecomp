@@ -49,12 +49,14 @@ generated/*.json
 src/gen/
 
 # ─────────────────────────────────────────────────────────────────────
-# Ghidra project DB (large, machine-specific; only the README.md
-# inside ghidra/ is tracked).
+# Ghidra project DB (large, machine-specific). Only the README.md
+# and the generated import_symbols.py script are tracked; the .gpr
+# and .rep files stay local.
 # ─────────────────────────────────────────────────────────────────────
 ghidra/*
 !ghidra/README.md
 !ghidra/.gitkeep
+!ghidra/import_symbols.py
 
 # ─────────────────────────────────────────────────────────────────────
 # Diagnostic / triage artifacts. Diff dumps, frame snapshots, boot

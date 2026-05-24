@@ -28,8 +28,11 @@ add_executable(verify_rom_hash tools/verify_rom_hash/main.cpp)
 # import_tmc_symbols — pulls symbol + boundary data from a local
 # checkout of zeldaret/tmc into symbols/. The decomp source itself
 # never enters this repo.
+#
+# Implemented as a Python script (text scraping is awkward in C++);
+# run directly:
+#   python tools/import_tmc_symbols/import_tmc_symbols.py
 # ─────────────────────────────────────────────────────────────────────
-add_executable(import_tmc_symbols tools/import_tmc_symbols/main.cpp)
 
 # ─────────────────────────────────────────────────────────────────────
 # MinishCapRecomp — the game binary. Links generated/*.c against the
