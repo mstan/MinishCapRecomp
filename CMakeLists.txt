@@ -58,8 +58,18 @@ target_include_directories(MinishCapRecomp PRIVATE
 )
 
 target_link_libraries(MinishCapRecomp PRIVATE
+    # --start-group/--end-group lets ld re-iterate the gbarecomp static
+    # libs to resolve their mutual references (runtime_arm.cpp in
+    # armv4t references kBiosDispatchTable defined in runtime, etc.).
+    # Without it, the single left-to-right linker scan misses
+    # cross-library refs that surface only after both libs have been
+    # partially processed.
+    "-Wl,--start-group"
     gbarecomp_runtime
     gbarecomp_debug
+    gbarecomp_gba
+    gbarecomp_armv4t
+    "-Wl,--end-group"
 )
 
 target_compile_definitions(MinishCapRecomp PRIVATE
