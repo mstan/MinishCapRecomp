@@ -7,6 +7,22 @@ This game repo defers all rules to the platform core:
 - `../gbarecomp/DEBUG.md`      — debug loop (RULE 0, RULE 0a, RULE 0b)
 - `../gbarecomp/TCP.md`        — TCP debug protocol
 
+## Showstopper: no interpreter, no game
+
+**This game does not begin until the runtime is fully recompiler-
+driven, including the BIOS.** See:
+- `../gbarecomp/PRINCIPLES.md` "BIOS is sacred — and recompiled, not
+  interpreted (SHOWSTOPPER)"
+- `../gbarecomp/PRINCIPLES.md` "Interpreter is informative, never
+  load-bearing (SHOWSTOPPER)"
+
+If `MinishCapRecomp.exe`'s runtime exec loop calls into
+`armv4t::Interpreter` for any PC — BIOS or cart — title-screen work
+is suspended until the recompiler-only path is restored. Phase 2.7
+(BIOS intro flawless) must be re-passed with **recompiled BIOS
+execution** before Phase 5 milestones (first cart instruction,
+first game function, title screen) resume.
+
 ## Game-specific rules
 
 1. **The decomp is a reference, not an oracle.** `zeldaret/tmc` is

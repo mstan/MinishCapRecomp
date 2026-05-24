@@ -4,7 +4,7 @@
 # verified against the actual cartridge image and disassembly.
 
 [rom]
-sha1 = "TBD"        # placeholder; runner refuses to launch with TBD
+sha1 = "b4bd50e4131b027c334547b4524e2dbbd4227130"
 
 [save]
 type = "eeprom"     # 8 KB EEPROM on the USA cart

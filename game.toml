@@ -27,7 +27,7 @@ sha1 = "300c20df6731a33952ded8c436f7f186d25d3492"
 # sha1 = expected SHA-1; if it doesn't match the runner refuses to
 #        launch (see CLAUDE.md "ROM hash gates everything").
 [rom]
-path = "minish_cap.gba"   # user-provided; not in this repo
+path = "roms/minishcap_usa.gba"   # user-provided; not in this repo
 # sha1 is filled in per region in config/<region>.toml.
 
 # ── Recompiler entry & layout ───────────────────────────────────────
