@@ -42,8 +42,10 @@ The decomp's C source is never read. Only symbol metadata.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import pathlib
 import re
+import subprocess
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -141,6 +143,314 @@ def infer_boundaries(funcs: list[Func]) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────
+NM_TEXT_SYM = re.compile(
+    r"^([0-9A-Fa-f]+)\s+([Tt])\s+([A-Za-z_][A-Za-z0-9_]*)\s*$"
+)
+OBJDUMP_TEXT_SECTION = re.compile(
+    r"^\s*\d+\s+\.text\s+([0-9A-Fa-f]+)\s+"
+)
+LINKER_TEXT_OBJECT = re.compile(
+    r"([A-Za-z0-9_./-]+\.o)\s*\(\.text\)"
+)
+ADDR_ANCHOR_NAME = re.compile(r"^sub_([0-9A-Fa-f]{8})$")
+DEFINED_EXPR = re.compile(r"defined\(([^)]+)\)")
+
+
+def align(value: int, alignment: int) -> int:
+    return (value + alignment - 1) & ~(alignment - 1)
+
+
+def align_down(value: int, alignment: int) -> int:
+    return value & ~(alignment - 1)
+
+
+def eval_linker_condition(expr: str) -> bool:
+    """Evaluate the small subset of linker.ld #if syntax for USA."""
+    defines = {"USA"}
+
+    def repl(match: re.Match[str]) -> str:
+        return "True" if match.group(1) in defines else "False"
+
+    py_expr = DEFINED_EXPR.sub(repl, expr)
+    py_expr = py_expr.replace("||", " or ")
+    py_expr = py_expr.replace("&&", " and ")
+    py_expr = re.sub(r"!\s*", " not ", py_expr)
+    try:
+        return bool(eval(py_expr, {"__builtins__": {}}, {}))
+    except Exception:
+        return False
+
+
+def active_linker_lines(text: str) -> Iterable[str]:
+    """Yield lines active for the USA non-demo build."""
+    frames: list[tuple[bool, bool]] = []
+    active = True
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#ifdef "):
+            name = stripped.split(None, 1)[1]
+            cond = name == "USA"
+            frames.append((active, cond))
+            active = active and cond
+            continue
+        if stripped.startswith("#if "):
+            cond = eval_linker_condition(stripped[4:].strip())
+            frames.append((active, cond))
+            active = active and cond
+            continue
+        if stripped.startswith("#else"):
+            if frames:
+                parent_active, cond = frames[-1]
+                active = parent_active and not cond
+                frames[-1] = (parent_active, not cond)
+            continue
+        if stripped.startswith("#endif"):
+            if frames:
+                parent_active, _cond = frames.pop()
+                active = parent_active
+            continue
+        if active:
+            yield line
+
+
+def asm_object_rel(source_file: str) -> str | None:
+    source = source_file.replace("\\", "/")
+    idx = source.find("asm/")
+    if idx < 0 or not source.endswith(".s"):
+        return None
+    return source[idx:-2] + ".o"
+
+
+def run_nm_text_symbols(obj: pathlib.Path,
+                        nm_tool: str) -> list[tuple[int, str, str]]:
+    try:
+        proc = subprocess.run(
+            [nm_tool, "-n", str(obj)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"  warn: cannot nm {obj}: {exc}", file=sys.stderr)
+        return []
+
+    syms: list[tuple[int, str, str]] = []
+    for line in proc.stdout.splitlines():
+        m = NM_TEXT_SYM.match(line)
+        if m:
+            syms.append((int(m.group(1), 16), m.group(2), m.group(3)))
+    return syms
+
+
+def read_text_size(obj: pathlib.Path,
+                   objdump_tool: str = "arm-none-eabi-objdump") -> int | None:
+    try:
+        proc = subprocess.run(
+            [objdump_tool, "-h", str(obj)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"  warn: cannot objdump {obj}: {exc}", file=sys.stderr)
+        return None
+
+    for line in proc.stdout.splitlines():
+        m = OBJDUMP_TEXT_SECTION.match(line)
+        if m:
+            return int(m.group(1), 16)
+    return None
+
+
+def parse_linker_text_order(linker_ld: pathlib.Path) -> list[str]:
+    try:
+        text = linker_ld.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(f"  warn: cannot read {linker_ld}: {exc}", file=sys.stderr)
+        return []
+
+    out: list[str] = []
+    for raw_line in active_linker_lines(text):
+        line = raw_line.split("/*", 1)[0]
+        m = LINKER_TEXT_OBJECT.search(line)
+        if not m:
+            continue
+        obj = m.group(1)
+        if obj.startswith("*"):
+            continue
+        out.append(obj)
+    return out
+
+
+def infer_object_bases(tmc_root: pathlib.Path,
+                       build_dir: pathlib.Path,
+                       asm_funcs: Iterable[Func],
+                       nm_tool: str = "arm-none-eabi-nm",
+                       objdump_tool: str = "arm-none-eabi-objdump"
+                       ) -> dict[str, int]:
+    """Infer linked ROM bases for built objects.
+
+    Decompiled C objects often have no address-bearing symbol names.
+    For those, use linker.ld order plus built object .text sizes.
+    A direct base is trusted when either a text symbol is named
+    sub_08xxxxxx or an ASM object symbol matches an annotated ASM label.
+    """
+    linker_order = parse_linker_text_order(tmc_root / "linker.ld")
+    if not linker_order:
+        return {}
+
+    asm_label_addrs: dict[str, dict[str, int]] = defaultdict(dict)
+    for func in asm_funcs:
+        obj_rel = asm_object_rel(func.source_file)
+        if obj_rel is not None:
+            asm_label_addrs[obj_rel][func.name] = func.addr
+
+    obj_infos: dict[str, dict[str, object]] = {}
+    for obj in build_dir.rglob("*.o"):
+        try:
+            obj_rel = str(obj.relative_to(build_dir)).replace("\\", "/")
+        except ValueError:
+            continue
+        size = read_text_size(obj, objdump_tool)
+        syms = run_nm_text_symbols(obj, nm_tool)
+        obj_infos[obj_rel] = {
+            "path": obj,
+            "size": size,
+            "syms": syms,
+        }
+
+    direct_bases: dict[str, int] = {}
+    for obj_rel, info in obj_infos.items():
+        syms = info["syms"]
+        assert isinstance(syms, list)
+        bases: set[int] = set()
+        for offset, _sym_type, name in syms:
+            anchor = ADDR_ANCHOR_NAME.match(name)
+            if anchor:
+                bases.add(int(anchor.group(1), 16) - offset)
+            asm_addr = asm_label_addrs.get(obj_rel, {}).get(name)
+            if asm_addr is not None:
+                bases.add(asm_addr - offset)
+        if len(bases) == 1:
+            direct_bases[obj_rel] = next(iter(bases))
+        elif len(bases) > 1:
+            print(f"  warn: inconsistent object bases in {obj_rel}",
+                  file=sys.stderr)
+
+    inferred: dict[str, int] = {}
+    current_base: int | None = None
+    for obj_rel in linker_order:
+        info = obj_infos.get(obj_rel)
+        if info is None:
+            current_base = None
+            continue
+
+        size_obj = info.get("size")
+        size = size_obj if isinstance(size_obj, int) else None
+        base = direct_bases.get(obj_rel)
+        if base is None and current_base is not None:
+            base = align(current_base, 4)
+        if base is not None:
+            inferred[obj_rel] = base
+            if size is not None:
+                current_base = base + size
+            else:
+                current_base = None
+        else:
+            current_base = None
+
+    current_base = None
+    for obj_rel in reversed(linker_order):
+        info = obj_infos.get(obj_rel)
+        if info is None:
+            current_base = None
+            continue
+
+        size_obj = info.get("size")
+        size = size_obj if isinstance(size_obj, int) else None
+        if obj_rel in inferred:
+            current_base = inferred[obj_rel]
+            continue
+
+        if current_base is not None and size is not None:
+            base = align_down(current_base - size, 4)
+            inferred[obj_rel] = base
+            current_base = base
+        else:
+            current_base = None
+
+    return inferred
+
+
+def parse_built_c_objects(tmc_root: pathlib.Path,
+                          build_dir: pathlib.Path,
+                          asm_funcs: Iterable[Func],
+                          nm_tool: str = "arm-none-eabi-nm") -> list[Func]:
+    """Read built C object files and infer linked ROM addresses."""
+    src_root = build_dir / "src"
+    if not src_root.exists():
+        return []
+
+    object_bases = infer_object_bases(tmc_root, build_dir, asm_funcs,
+                                      nm_tool)
+    out: list[Func] = []
+    for obj in sorted(src_root.rglob("*.o")):
+        syms = run_nm_text_symbols(obj, nm_tool)
+
+        bases: set[int] = set()
+        for offset, _sym_type, name in syms:
+            anchor = ADDR_ANCHOR_NAME.match(name)
+            if anchor:
+                bases.add(int(anchor.group(1), 16) - offset)
+        try:
+            obj_rel = str(obj.relative_to(build_dir)).replace("\\", "/")
+        except ValueError:
+            obj_rel = ""
+        if obj_rel in object_bases:
+            bases.add(object_bases[obj_rel])
+
+        if not bases:
+            continue
+        if len(bases) != 1:
+            print(f"  warn: inconsistent C object anchors in {obj}",
+                  file=sys.stderr)
+            continue
+        base = next(iter(bases))
+
+        try:
+            rel = str(obj.relative_to(tmc_root)).replace("\\", "/")
+        except ValueError:
+            rel = str(obj).replace("\\", "/")
+        obj_prefix = "_".join(obj.relative_to(src_root).with_suffix("").parts)
+
+        for offset, sym_type, raw_name in syms:
+            name = raw_name
+            if sym_type == "t" and not ADDR_ANCHOR_NAME.match(raw_name):
+                name = f"{obj_prefix}_{raw_name}"
+            out.append(Func(
+                addr=base + offset,
+                mode="thumb",
+                name=name,
+                source_file=rel,
+            ))
+    return out
+
+
+def dedupe_funcs(funcs: Iterable[Func]) -> list[Func]:
+    out: list[Func] = []
+    seen: set[tuple[int, str]] = set()
+    for f in funcs:
+        key = (f.addr, f.mode)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(f)
+    return out
+
+
 # linker.ld parsing
 # ─────────────────────────────────────────────────────────────────────
 
@@ -209,7 +519,7 @@ def parse_linker_ld(path: pathlib.Path) -> list[DataSym]:
         "iwram": 0x03000000,
         "rom":   0x08000000,
     }
-    for line in text.splitlines():
+    for line in active_linker_lines(text):
         sm = section_re.match(line)
         if sm:
             current_origin = origins.get(sm.group(1), 0)
@@ -274,6 +584,125 @@ def write_data_symbols(path: pathlib.Path,
         for s in rows:
             fh.write(f"0x{s.addr:08X}\t{s.region}\t{s.name}\n")
     return len(rows)
+
+
+def write_recompiler_toml(path: pathlib.Path,
+                          funcs: Iterable[Func],
+                          rom_path: pathlib.Path,
+                          data_syms: Iterable[DataSym]) -> int:
+    if not rom_path.exists():
+        print(f"  warn: ROM not found at {rom_path}; skipping TOML",
+              file=sys.stderr)
+        return 0
+
+    rom = rom_path.read_bytes()
+    sha1 = hashlib.sha1(rom).hexdigest()
+    rows = sorted(funcs, key=lambda f: (f.addr, f.name))
+
+    code_copies = [
+        (0x0300404C, 0x080AF3A4, 0x00000380, "sound_main_ram",
+         "M4A SoundMainRAM copied to IWRAM"),
+        (0x030056F0, 0x080B197C, 0x00001280, "iwram_funcs",
+         "tmc RAMFUNCS_BASE copied to IWRAM"),
+    ]
+
+    manual_entries = [
+        (0x08000000, "arm", "rom_header_start_vector",
+         "GBA ROM header branch to crt0"),
+        (0x080000C0, "arm", "crt0_start",
+         "ROM header branch target"),
+        (0x03005D90, "arm", "ram_IntrMain",
+         "IWRAM copy; source bytes at 0x080B201C"),
+        (0x0300404C, "thumb", "ram_SoundMainRAM",
+         "IWRAM copy; source bytes at 0x080AF3A4"),
+        (0x080B14C6, "thumb", "BgAffineSet_swi_cont",
+         "libagbsyscall SWI continuation"),
+        (0x080B14CA, "thumb", "CpuSet_swi_cont",
+         "libagbsyscall SWI continuation"),
+        (0x080B14CE, "thumb", "Div_swi_cont",
+         "libagbsyscall SWI continuation"),
+        (0x080B14D2, "thumb", "Mod_swi_cont",
+         "libagbsyscall SWI continuation"),
+        (0x080B14DA, "thumb", "LZ77UnCompVram_swi_cont",
+         "libagbsyscall SWI continuation"),
+        (0x080B14DE, "thumb", "LZ77UnCompWram_swi_cont",
+         "libagbsyscall SWI continuation"),
+        (0x080B14E2, "thumb", "ObjAffineSet_swi_cont",
+         "libagbsyscall SWI continuation"),
+        (0x080B14E6, "thumb", "RegisterRamReset_swi_cont",
+         "libagbsyscall SWI continuation"),
+        (0x080B14EC, "thumb", "SoundBiasReset_swi_cont",
+         "libagbsyscall SWI continuation"),
+        (0x080B14F4, "thumb", "SoundBiasSet_swi_cont",
+         "libagbsyscall SWI continuation"),
+        (0x080B14FA, "thumb", "Sqrt_swi_cont",
+         "libagbsyscall SWI continuation"),
+        (0x080B1500, "thumb", "VBlankIntrWait_swi_cont",
+         "libagbsyscall SWI continuation"),
+    ]
+
+    manual_keys = {(addr, mode) for addr, mode, _name, _note in manual_entries}
+    for sym in sorted(data_syms, key=lambda s: (s.addr, s.name)):
+        if sym.region != "iwram" or not sym.name.startswith("ram_"):
+            continue
+        for runtime_start, source_start, size, name, _note in code_copies:
+            if name != "iwram_funcs":
+                continue
+            if runtime_start <= sym.addr < runtime_start + size:
+                key = (sym.addr, "arm")
+                if key in manual_keys:
+                    break
+                source = source_start + (sym.addr - runtime_start)
+                manual_entries.append(
+                    (sym.addr, "arm", sym.name,
+                     f"IWRAM copy; source bytes at 0x{source:08X}"))
+                manual_keys.add(key)
+                break
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write("# Generated by tools/import_tmc_symbols/import_tmc_symbols.py\n")
+        fh.write("# Source: zeldaret/tmc asm labels plus ROM header metadata.\n")
+        fh.write("# Do not hand-edit; rerun the importer.\n\n")
+
+        fh.write("[program]\n")
+        fh.write('name = "The Legend of Zelda: The Minish Cap (USA)"\n')
+        fh.write('id = "minishcap_usa"\n')
+        fh.write("load_address = 0x08000000\n")
+        fh.write(f"size = 0x{len(rom):08X}\n")
+        fh.write("entry_pc = 0x08000000\n\n")
+
+        fh.write("[identity]\n")
+        fh.write(f'sha1 = "{sha1}"\n\n')
+
+        fh.write("[[data_range]]\n")
+        fh.write("start = 0x08000004\n")
+        fh.write("end = 0x080000C0\n")
+        fh.write('note = "GBA ROM header and Nintendo logo bytes"\n\n')
+
+        for runtime_start, source_start, size, name, note in code_copies:
+            fh.write("[[code_copy]]\n")
+            fh.write(f"runtime_start = 0x{runtime_start:08X}\n")
+            fh.write(f"source_start = 0x{source_start:08X}\n")
+            fh.write(f"size = 0x{size:08X}\n")
+            fh.write(f'name = "{name}"\n')
+            fh.write(f'note = "{note}"\n\n')
+
+        for addr, mode, name, note in manual_entries:
+            fh.write("[[extra_func]]\n")
+            fh.write(f"addr = 0x{addr:08X}\n")
+            fh.write(f'mode = "{mode}"\n')
+            fh.write(f'name = "{name}"\n')
+            fh.write(f'note = "{note}"\n\n')
+
+        for f in rows:
+            fh.write("[[extra_func]]\n")
+            fh.write(f"addr = 0x{f.addr:08X}\n")
+            fh.write(f'mode = "{f.mode}"\n')
+            fh.write(f'name = "{f.name}"\n')
+            fh.write(f'note = "{f.source_file}"\n\n')
+
+    return len(rows) + len(manual_entries)
 
 
 def write_ghidra_script(path: pathlib.Path,
@@ -406,12 +835,21 @@ def main() -> int:
     ap.add_argument("--tmc", type=pathlib.Path,
                     default=ROOT / "third_party" / "tmc",
                     help="Path to the cloned zeldaret/tmc repo.")
+    ap.add_argument("--tmc-build", type=pathlib.Path,
+                    default=None,
+                    help="Path to a local tmc build dir with C objects.")
     ap.add_argument("--out", type=pathlib.Path,
                     default=ROOT / "symbols",
                     help="Output dir for symbol TSVs.")
     ap.add_argument("--ghidra", type=pathlib.Path,
                     default=ROOT / "ghidra",
                     help="Output dir for the Ghidra import script.")
+    ap.add_argument("--rom", type=pathlib.Path,
+                    default=ROOT / "roms" / "minishcap_usa.gba",
+                    help="ROM path used only to hash-anchor TOML output.")
+    ap.add_argument("--toml", type=pathlib.Path,
+                    default=ROOT / "symbols" / "minishcap.toml",
+                    help="Output path for gba_recompile TOML config.")
     args = ap.parse_args()
 
     if not args.tmc.exists():
@@ -433,6 +871,14 @@ def main() -> int:
         funcs.extend(parse_asm_file(asm_file))
     print(f"    found {len(funcs)} function symbols")
 
+    tmc_build = args.tmc_build or (args.tmc / "build" / "USA")
+    print(f"==> scanning built C objects in {tmc_build}")
+    c_funcs = parse_built_c_objects(args.tmc, tmc_build, funcs)
+    if c_funcs:
+        funcs.extend(c_funcs)
+        funcs = dedupe_funcs(funcs)
+    print(f"    found {len(c_funcs)} C object function symbols")
+
     infer_boundaries(funcs)
 
     linker_ld = args.tmc / "linker.ld"
@@ -449,12 +895,15 @@ def main() -> int:
         args.out / "function_boundaries.tsv", funcs)
     n3 = write_data_symbols(
         args.out / "imported_data_symbols.tsv", data_syms)
+    n4 = write_recompiler_toml(args.toml, funcs, args.rom, data_syms)
     write_ghidra_script(
         args.ghidra / "import_symbols.py", funcs, data_syms)
 
     print(f"==> wrote {n1} rows to {args.out / 'imported_symbols.tsv'}")
     print(f"==> wrote {n2} rows to {args.out / 'function_boundaries.tsv'}")
     print(f"==> wrote {n3} rows to {args.out / 'imported_data_symbols.tsv'}")
+    if n4:
+        print(f"==> wrote {n4} entries to {args.toml}")
     print(f"==> wrote Ghidra script to "
           f"{args.ghidra / 'import_symbols.py'}")
 
