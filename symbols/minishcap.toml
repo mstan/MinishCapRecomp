@@ -129,7 +129,7 @@ note = "libagbsyscall SWI continuation"
 
 [[extra_func]]
 addr = 0x030056F0
-mode = "arm"
+mode = "thumb"
 name = "ram_sub_080B197C"
 note = "IWRAM copy; source bytes at 0x080B197C"
 
@@ -426,6 +426,222 @@ addr = 0x0300695C
 mode = "arm"
 name = "ram_0x80b2be8"
 note = "IWRAM copy; source bytes at 0x080B2BE8"
+
+[[jump_table]]
+addr = 0x08100CBC
+stride = 4
+count = 6
+format = "abs32"
+entries_mode = "auto"
+note = "game task dispatch table"
+
+[[jump_table]]
+addr = 0x080FC8A4
+stride = 4
+count = 11
+format = "abs32"
+entries_mode = "auto"
+note = "file-select state table"
+
+[[jump_table]]
+addr = 0x080FC8FC
+stride = 4
+count = 6
+format = "abs32"
+entries_mode = "auto"
+note = "file-select menu callback table"
+
+[[jump_table]]
+addr = 0x080FC93C
+stride = 4
+count = 13
+format = "abs32"
+entries_mode = "auto"
+note = "file-select transition callback table"
+
+[[jump_table]]
+addr = 0x080FC9B0
+stride = 4
+count = 20
+format = "abs32"
+entries_mode = "auto"
+note = "file-select widget callback table"
+
+[[jump_table]]
+addr = 0x080FCA04
+stride = 4
+count = 7
+format = "abs32"
+entries_mode = "auto"
+note = "post-title task callback table"
+
+[[jump_table]]
+addr = 0x080FCA70
+stride = 4
+count = 5
+format = "abs32"
+entries_mode = "auto"
+note = "game-over callback table"
+
+[[jump_table]]
+addr = 0x080FCB18
+stride = 4
+count = 8
+format = "abs32"
+entries_mode = "auto"
+note = "staff-roll callback table"
+
+[[jump_table]]
+addr = 0x080FCBB4
+stride = 4
+count = 4
+format = "abs32"
+entries_mode = "auto"
+note = "debug callback table"
+
+[[jump_table]]
+addr = 0x08050C88
+stride = 4
+count = 32
+format = "abs32"
+entries_mode = "thumb"
+note = "slot-start cursor dispatch table"
+
+[[jump_table]]
+addr = 0x08051258
+stride = 4
+count = 8
+format = "abs32"
+entries_mode = "thumb"
+note = "name-entry action dispatch table"
+
+[[jump_table]]
+addr = 0x0805252C
+stride = 4
+count = 11
+format = "abs32"
+entries_mode = "thumb"
+note = "InitializePlayer spawn-state dispatch table"
+
+[[jump_table]]
+addr = 0x08052AB4
+stride = 4
+count = 9
+format = "abs32"
+entries_mode = "thumb"
+note = "InitRoomTransition type dispatch table"
+
+[[jump_table]]
+addr = 0x0805F00C
+stride = 4
+count = 16
+format = "abs32"
+entries_mode = "thumb"
+note = "GetCharacter top-level dispatch table"
+
+[[jump_table]]
+addr = 0x0805F0AC
+stride = 4
+count = 22
+format = "abs32"
+entries_mode = "thumb"
+note = "GetCharacter character-range dispatch table"
+
+[[jump_table]]
+addr = 0x0805F27C
+stride = 4
+count = 9
+format = "abs32"
+entries_mode = "thumb"
+note = "sub_0805F25C character dispatch table"
+
+[[jump_table]]
+addr = 0x0805F36C
+stride = 4
+count = 15
+format = "abs32"
+entries_mode = "thumb"
+note = "GetFontStrWith character dispatch table"
+
+[[jump_table]]
+addr = 0x0805F6C8
+stride = 4
+count = 15
+format = "abs32"
+entries_mode = "thumb"
+note = "sub_0805F6A4 text-width dispatch table"
+
+[[jump_table]]
+addr = 0x08070958
+stride = 4
+count = 16
+format = "abs32"
+entries_mode = "thumb"
+note = "player_PlayerNormal input dispatch table"
+
+[[jump_table]]
+addr = 0x0805677C
+stride = 4
+count = 15
+format = "abs32"
+entries_mode = "thumb"
+note = "RunTextCommand command dispatch table"
+
+[[jump_table]]
+addr = 0x0807BDD8
+stride = 4
+count = 8
+format = "abs32"
+entries_mode = "thumb"
+note = "sub_0807BDB8 direction dispatch table"
+
+[[jump_table]]
+addr = 0x0807C358
+stride = 4
+count = 25
+format = "abs32"
+entries_mode = "thumb"
+note = "LoadRoomGfx room-type dispatch table"
+
+[[jump_table]]
+addr = 0x08080A80
+stride = 4
+count = 29
+format = "abs32"
+entries_mode = "thumb"
+note = "UpdateDoorTransition direction dispatch table"
+
+[[jump_table]]
+addr = 0x0808EAF8
+stride = 4
+count = 8
+format = "abs32"
+entries_mode = "thumb"
+note = "sub_0808EABC file-screen object dispatch table"
+
+[[jump_table]]
+addr = 0x0808EBD8
+stride = 4
+count = 6
+format = "abs32"
+entries_mode = "thumb"
+note = "object_fileScreenObjects_Type16 dispatch table"
+
+[[jump_table]]
+addr = 0x080907E4
+stride = 4
+count = 39
+format = "abs32"
+entries_mode = "thumb"
+note = "FurnitureInit flags dispatch table"
+
+[[jump_table]]
+addr = 0x08090880
+stride = 4
+count = 21
+format = "abs32"
+entries_mode = "thumb"
+note = "FurnitureInit type dispatch table"
 
 [[extra_func]]
 addr = 0x08000108

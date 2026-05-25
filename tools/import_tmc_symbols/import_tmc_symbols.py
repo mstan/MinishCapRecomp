@@ -640,6 +640,43 @@ def write_recompiler_toml(path: pathlib.Path,
         (0x080B1500, "thumb", "VBlankIntrWait_swi_cont",
          "libagbsyscall SWI continuation"),
     ]
+    manual_jump_tables = [
+        (0x08100CBC, 4, 6, "abs32", "auto", "game task dispatch table"),
+        (0x080FC8A4, 4, 11, "abs32", "auto", "file-select state table"),
+        (0x080FC8FC, 4, 6, "abs32", "auto", "file-select menu callback table"),
+        (0x080FC93C, 4, 13, "abs32", "auto", "file-select transition callback table"),
+        (0x080FC9B0, 4, 20, "abs32", "auto", "file-select widget callback table"),
+        (0x080FCA04, 4, 7, "abs32", "auto", "post-title task callback table"),
+        (0x080FCA70, 4, 5, "abs32", "auto", "game-over callback table"),
+        (0x080FCB18, 4, 8, "abs32", "auto", "staff-roll callback table"),
+        (0x080FCBB4, 4, 4, "abs32", "auto", "debug callback table"),
+        (0x08050C88, 4, 32, "abs32", "thumb", "slot-start cursor dispatch table"),
+        (0x08051258, 4, 8, "abs32", "thumb", "name-entry action dispatch table"),
+        (0x0805252C, 4, 11, "abs32", "thumb", "InitializePlayer spawn-state dispatch table"),
+        (0x08052AB4, 4, 9, "abs32", "thumb", "InitRoomTransition type dispatch table"),
+        (0x0805F00C, 4, 16, "abs32", "thumb", "GetCharacter top-level dispatch table"),
+        (0x0805F0AC, 4, 22, "abs32", "thumb", "GetCharacter character-range dispatch table"),
+        (0x0805F27C, 4, 9, "abs32", "thumb", "sub_0805F25C character dispatch table"),
+        (0x0805F36C, 4, 15, "abs32", "thumb", "GetFontStrWith character dispatch table"),
+        (0x0805F6C8, 4, 15, "abs32", "thumb", "sub_0805F6A4 text-width dispatch table"),
+        (0x08070958, 4, 16, "abs32", "thumb", "player_PlayerNormal input dispatch table"),
+        (0x0805677C, 4, 15, "abs32", "thumb", "RunTextCommand command dispatch table"),
+        (0x0807BDD8, 4, 8, "abs32", "thumb", "sub_0807BDB8 direction dispatch table"),
+        (0x0807C358, 4, 25, "abs32", "thumb", "LoadRoomGfx room-type dispatch table"),
+        (0x08080A80, 4, 29, "abs32", "thumb", "UpdateDoorTransition direction dispatch table"),
+        (0x0808EAF8, 4, 8, "abs32", "thumb", "sub_0808EABC file-screen object dispatch table"),
+        (0x0808EBD8, 4, 6, "abs32", "thumb", "object_fileScreenObjects_Type16 dispatch table"),
+        (0x080907E4, 4, 39, "abs32", "thumb", "FurnitureInit flags dispatch table"),
+        (0x08090880, 4, 21, "abs32", "thumb", "FurnitureInit type dispatch table"),
+    ]
+
+    def mode_for_iwram_func_source(source: int) -> str:
+        # RAMFUNCS_BASE starts with a small THUMB routine, then switches
+        # to ARM at arm_GetTileAtEntityPos and remains ARM for the copied
+        # gameplay hot-path routines in intr.s.
+        if source < 0x080B19CC:
+            return "thumb"
+        return "arm"
 
     manual_keys = {(addr, mode) for addr, mode, _name, _note in manual_entries}
     for sym in sorted(data_syms, key=lambda s: (s.addr, s.name)):
@@ -649,12 +686,13 @@ def write_recompiler_toml(path: pathlib.Path,
             if name != "iwram_funcs":
                 continue
             if runtime_start <= sym.addr < runtime_start + size:
-                key = (sym.addr, "arm")
+                source = source_start + (sym.addr - runtime_start)
+                mode = mode_for_iwram_func_source(source)
+                key = (sym.addr, mode)
                 if key in manual_keys:
                     break
-                source = source_start + (sym.addr - runtime_start)
                 manual_entries.append(
-                    (sym.addr, "arm", sym.name,
+                    (sym.addr, mode, sym.name,
                      f"IWRAM copy; source bytes at 0x{source:08X}"))
                 manual_keys.add(key)
                 break
@@ -693,6 +731,15 @@ def write_recompiler_toml(path: pathlib.Path,
             fh.write(f"addr = 0x{addr:08X}\n")
             fh.write(f'mode = "{mode}"\n')
             fh.write(f'name = "{name}"\n')
+            fh.write(f'note = "{note}"\n\n')
+
+        for addr, stride, count, fmt, entries_mode, note in manual_jump_tables:
+            fh.write("[[jump_table]]\n")
+            fh.write(f"addr = 0x{addr:08X}\n")
+            fh.write(f"stride = {stride}\n")
+            fh.write(f"count = {count}\n")
+            fh.write(f'format = "{fmt}"\n')
+            fh.write(f'entries_mode = "{entries_mode}"\n')
             fh.write(f'note = "{note}"\n\n')
 
         for f in rows:
