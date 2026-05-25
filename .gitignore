@@ -35,7 +35,12 @@ build-*/
 *.tlog
 *.idb
 release-stage/
+MinishCapRecomp-v*-windows-x64.zip
 MinishCapRecomp-windows-*.zip
+
+# Sidecar caches written by the asset picker.
+bios.cfg
+rom.cfg
 
 # ─────────────────────────────────────────────────────────────────────
 # Generated code (derivative of copyrighted ROM; regenerate locally).

@@ -4,7 +4,8 @@
 # verified against the actual cartridge image and disassembly.
 
 [rom]
-sha1 = "b4bd50e4131b027c334547b4524e2dbbd4227130"
+sha1  = "b4bd50e4131b027c334547b4524e2dbbd4227130"
+crc32 = "0x32D19810"  # IEEE 802.3, headerless
 
 [save]
 type = "eeprom"     # 8 KB EEPROM on the USA cart
