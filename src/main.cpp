@@ -49,6 +49,9 @@ int main(int argc, char** argv) {
     gbarecomp::RunOptions opts;
     opts.builtin_game_name  = "Minish Cap (USA)";
     opts.builtin_rom_sha1   = "b4bd50e4131b027c334547b4524e2dbbd4227130";
-    opts.builtin_rom_crc32  = 0x32D19810u;
+    // CRC32 is informational only (see gbarecomp's SHA-only gate
+    // decision in commit 9fd99b6); leave it 0 so the picker doesn't
+    // warn on a value we'd otherwise need to keep in lockstep.
+    opts.builtin_rom_crc32  = 0;
     return gbarecomp::run_game(argc, argv, opts);
 }

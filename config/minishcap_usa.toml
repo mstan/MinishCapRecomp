@@ -5,7 +5,8 @@
 
 [rom]
 sha1  = "b4bd50e4131b027c334547b4524e2dbbd4227130"
-crc32 = "0x32D19810"  # IEEE 802.3, headerless
+crc32 = "0xABCEBBB1"  # IEEE 802.3, headerless. Informational —
+                      # the runtime's gate is SHA-1, not CRC32.
 
 [save]
 type = "eeprom"     # 8 KB EEPROM on the USA cart
