@@ -12,9 +12,7 @@
 #include <cstring>
 #include <string>
 
-namespace gbarecomp {
-int run_game(int argc, char** argv);
-}
+#include "runtime.h"
 
 namespace {
 
@@ -45,5 +43,12 @@ int main(int argc, char** argv) {
         }
     }
 
-    return gbarecomp::run_game(argc, argv);
+    // Built-in defaults so a standalone MinishCapRecomp.exe ships
+    // without a sibling game.toml. The picker still validates against
+    // these values; CLI / TOML can override.
+    gbarecomp::RunOptions opts;
+    opts.builtin_game_name  = "Minish Cap (USA)";
+    opts.builtin_rom_sha1   = "b4bd50e4131b027c334547b4524e2dbbd4227130";
+    opts.builtin_rom_crc32  = 0x32D19810u;
+    return gbarecomp::run_game(argc, argv, opts);
 }

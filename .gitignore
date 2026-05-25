@@ -34,8 +34,11 @@ build-*/
 *.dll
 *.tlog
 *.idb
+build-release/
 release-stage/
+MinishCapRecomp.exe
 MinishCapRecomp-v*-windows-x64.zip
+MinishCapRecomp-v*-windows-x64.exe
 MinishCapRecomp-windows-*.zip
 
 # Sidecar caches written by the asset picker.

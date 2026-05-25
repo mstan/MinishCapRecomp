@@ -5,36 +5,24 @@ title screen via the static gbarecomp pipeline — recompiled BIOS,
 recompiled cart, `runtime_dispatch` only, no interpreter on the hot
 path.
 
-## What's in this release
+## What you download
 
-- `MinishCapRecomp.exe` — game runner. Loads your GBA BIOS + your
-  Minish Cap ROM, hash-verifies both, and runs the recompiled output.
-- `game.toml` + `config/minishcap_usa.toml` — runtime config.
-- `bios.cfg` + `rom.cfg` are written next to the .exe after a
-  successful pick.
-- `SDL2.dll`, `libgcc_s_seh-1.dll`, `libstdc++-6.dll`,
-  `libwinpthread-1.dll` — runtime dependencies (MSYS2 mingw64 build).
-- `LICENSE` — PolyForm Noncommercial 1.0.0.
-- `START_HERE.txt` — first-launch instructions.
-
-## What's NOT in this release
-
-- **No GBA BIOS.** Provide your own `gba_bios.bin` dump.
-  SHA-1 `300c20df6731a33952ded8c436f7f186d25d3492`,
-  CRC32 `0x21A2AE0A`.
-- **No game ROM.** Provide your own Minish Cap (USA) cartridge dump.
-  SHA-1 `b4bd50e4131b027c334547b4524e2dbbd4227130`,
-  CRC32 `0x32D19810`.
-- **No game source.** The recompiled cart C is regenerated locally at
-  build time from the seed tables in `symbols/`. It does not ship.
+A single, fully-standalone `MinishCapRecomp.exe`. No zip, no sidecar
+DLLs, no sidecar config files — SDL2, libstdc++, libgcc, libwinpthread
+are statically linked into the binary, and the per-game defaults
+(ROM SHA-1, CRC32, name) are baked in via `RunOptions`. The only DLLs
+it imports are stock Windows ones (KERNEL32, USER32, GDI32, ole32,
+comdlg32, etc.).
 
 ## First launch
 
 1. Run `MinishCapRecomp.exe`.
 2. A Windows file picker appears for your `gba_bios.bin`. Pick it.
-   The runtime hash-verifies — match → ok, mismatch → warning dialog
-   then proceeds anyway.
-3. A second picker appears for your Minish Cap (USA) ROM.
+   The runtime hash-verifies — match (SHA-1 `300c20df...3492`, CRC32
+   `0x21A2AE0A`) → ok, mismatch → warning dialog then proceed.
+3. A second picker appears for your Minish Cap (USA) ROM. Expected
+   SHA-1 `b4bd50e4131b027c334547b4524e2dbbd4227130`, CRC32
+   `0x32D19810`. Same warn-and-try semantics.
 4. The recompiled boot path runs: BIOS intro (GAME BOY logo + chime),
    then cart code, then the Minish Cap title screen.
 
@@ -46,6 +34,14 @@ Default keymap (matches the gbarecomp framework):
 - Arrow keys = D-pad
 - S = R, A = L
 - Esc = quit
+
+## What's NOT in this release
+
+- **No GBA BIOS.** Provide your own legally obtained dump.
+- **No Minish Cap ROM.** Provide your own legally obtained cartridge
+  dump.
+- **No game source.** The recompiled cart C is regenerated locally at
+  build time from the seed tables in `symbols/`. It does not ship.
 
 ## Status
 
