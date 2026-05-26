@@ -17,6 +17,81 @@ crash on the path out of the house through the right door.
 
 ## High priority
 
+### MC-HP-000: Function-finder relies on manual hints; cheap discovery heuristics not implemented
+- **Observed:** 2026-05-25, during MC-HP-001 triage. The 28
+  `[[jump_table]]` entries shipped in `a4d0187` and the growing
+  list of manual `[[extra_func]]` entries are all symptoms of
+  the discovery pass not catching idioms it could be catching.
+  MC-HP-001 (dispatch miss at `0x0804B208`) is the latest
+  instance; closing it with another `extra_func` line would be
+  a symptom patch.
+- **Detail:** Today's finder is recursive-descent from known
+  entry points + direct `BL`/`B`. It cannot follow indirect
+  control flow (`BX rN`, `LDR pc, [...]`, function-pointer
+  callbacks, jump tables) without an explicit hint. Every
+  per-game manual entry we accumulate is evidence of a finder
+  gap that, once closed, would have caught it for free — and
+  for every game.
+- **Heuristics to evaluate, precision-first:**
+  - **Literal-pool sweeping.** ARM/THUMB code stores function
+    pointers as 32-bit words in PC-relative literal pools next
+    to functions, then loads them via `LDR rN, =0x08XXXXXX`
+    for a later `BX`. Sweep code-section literal pools; any
+    word matching `(0x08000000..0x0BFFFFFF | thumb-bit)` whose
+    target disassembles to a plausible prologue is
+    overwhelmingly a code pointer. Cheap, high precision,
+    very high recall.
+  - **Jump-table idiom recognition.** Compiler emits indirect
+    dispatch in a small set of canonical shapes
+    (`CMP rN,#count; BCS default; ADD pc,pc,rN,LSL #2; B…;
+    B…;` or `LDR pc,[pc,rN,LSL #2]` followed by N aligned
+    words). Ghidra and IDA both pattern-match these. Almost
+    all 28 manual jump tables we just added would have been
+    caught automatically.
+  - **Function-prologue scanning in IWRAM-copied regions.**
+    These regions are bounded, 100% code, and small. Linear
+    sweep for `PUSH {lr, …}` / `STMFD sp!, {…}` shapes — high
+    recall with negligible false-positive risk inside the
+    bounded region.
+  - **Value analysis (cheap case).** `LDR rN, =literal` inside
+    a basic block followed by `BX rN` is trivially resolvable
+    without cross-BB constant propagation. Catches the common
+    one-call-site indirect.
+  - **Expanded config hints.** `[[function_pointer_word]]`
+    (single callback slot), `[[function_pointer_table]]`
+    (region of N consecutive `void(*)()` words — Minish Cap's
+    task system is full of these), `[[scan_region]]`
+    (opt-in linear sweep over a known code-only PC range).
+    Lower-risk than full heuristics because the user opts in
+    per-region; useful as a safety valve and as a starting
+    point before pattern detection lands.
+- **Cross-pollination:** survey `segagenesisrecomp` (M68K),
+  `psxrecomp` (MIPS R3000), `nesrecomp` (6502), and
+  `snesrecomp` (65816) for technique inventory. Instruction
+  sets differ but the *shape* of the discovery problem is
+  identical (recursive descent + indirect-control hints +
+  manual entries). Whatever has worked / failed there should
+  inform implementation order here. Specifically check whether
+  any of them already implement literal-pool sweep or
+  jump-table idiom recognition — those are the highest-value
+  imports.
+- **Priority:** high — this is the proper-fix prerequisite for
+  MC-HP-001 and for every future dispatch miss. Per the
+  "completeness > shortcut" rule and the recompiler-discipline
+  posture (fix the recompiler tool, not the symptom), the
+  immediate `extra_func` unblock for MC-HP-001 is fine, but
+  the long-term work has to land here. False positives are
+  bad; the precision-first ordering above is meant to ensure
+  every discovered entry is verifiable before it goes into the
+  generated output.
+- **Next step:** start with the cross-project survey to avoid
+  re-inventing what already exists. Then implement in the
+  precision-first order listed. Manual hints remain available
+  as a safety valve for things the heuristics still can't
+  reach, but the goal is for the manual-hint count to *drop*
+  with each landed heuristic — a rising count is a regression
+  signal.
+
 ### MC-HP-001: Crash when Link walks through the right-side door on Link's-house ground floor
 - **Observed:** 2026-05-25. After the Zelda cutscene resolves and
   Link can move, the ground-floor room (Image #4) renders 100%
@@ -33,15 +108,22 @@ crash on the path out of the house through the right door.
   game-breaking bug" rule firing as designed (per
   `gbarecomp/CLAUDE.md` DISPATCH MISS RULE).
 - **Priority:** high — blocks all gameplay past the opening room.
+- **Proper fix gated by:** MC-HP-000. The immediate `extra_func`
+  unblock is acceptable for triage; the long-term fix is for the
+  function-finder to discover `0x0804B208` without a manual hint.
+  Closing this with another `extra_func` line and skipping the
+  finder audit would convert this entry into permanent tech debt
+  and guarantee a near-identical miss next time we cross a new
+  room boundary.
 - **Next step:** add `extra_func 0x0804B208` (mode TBD — likely
   `thumb` given surrounding ARM/THUMB context shown in trace) to
   `symbols/minishcap.toml`, regenerate, rebuild. Then run again
   and walk the same path; check `dispatch_misses.log` for the next
   follow-on miss and iterate until the doorway transition completes.
-  Once a clean traversal exists, audit the function-finder pass to
-  understand why this entry was missed (jump-table coverage? IT
-  block continuation? IWRAM copy?) so we don't accumulate a long
-  tail of manual entries.
+  Once a clean traversal exists, *do not close this issue* —
+  hand it to MC-HP-000 with the xref data (caller PC, branch type,
+  table source if any) so the audit pass has a concrete first
+  case to validate the new heuristic against.
 
 ### MC-HP-002: Long unresponsive hangs at cutscene boundaries
 - **Observed:** 2026-05-25. Two distinct multi-second hangs during
