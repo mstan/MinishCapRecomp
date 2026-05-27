@@ -218,31 +218,40 @@ crash on the path out of the house through the right door.
   limiter at the correct rate. Verify with a stopwatch against
   mGBA over 30 seconds of overworld play.
 
-### MC-HP-005: Save states are not implemented
+### MC-HP-005: Save states — RESOLVED 2026-05-26
 - **Observed:** 2026-05-25. User flagged the absence as a
   debug-loop blocker — every bug repro currently requires
   walking back through the BIOS intro + stained-glass + Zelda
   cutscene from cold start, which makes the other four
   high-priority entries each cost several minutes per attempt.
-- **Detail:** EEPROM save persistence (the SRAM-backed save
-  file the game itself writes) shipped in `29e81ac`. Save
-  *states* (snapshot of full machine state — CPU regs + IWRAM
-  + EWRAM + PAL + VRAM + OAM + I/O + PPU + audio + bus state +
-  current PC) are a separate, host-driven feature.
-- **Priority:** high — promoted from medium 2026-05-25 because
-  it is the multiplier on every other high-priority entry.
-  Investigation cost on MC-HP-001 (door crash), MC-HP-002
-  (cutscene hangs), and MC-HP-003 (transition garbling) all
-  drop sharply once a snapshot taken near each repro point
-  exists.
-- **Next step:** design a single binary snapshot format that
-  versions cleanly, dumps every host-owned state buffer, and
-  restores it without re-running the BIOS. Wire to a TCP
-  `savestate_save` / `savestate_load` command first (debug
-  workflow gets the most leverage here); hotkey on the host
-  window second. Recommended to do this *before* digging into
-  MC-HP-001..004 so each of those gets the loop-tightening
-  benefit.
+- **Resolution (2026-05-26):** Implemented a versioned binary
+  snapshot (`GBAS` container, format v1) in
+  `gbarecomp/src/debug/snapshot.{h,cpp}`. Captures the full
+  machine at the dispatch boundary between `step_once()` calls
+  (host C stack empty — the only safe boundary per
+  PRINCIPLES.md): `g_cpu` + the host-side call-return stack,
+  EWRAM/IWRAM/PAL/VRAM/OAM, the IO page + timer/DMA shadow
+  state, the audio mixer + FIFOs + pending output ring, the
+  EEPROM chip, and the PPU. Per-subsystem `serialize`/
+  `deserialize` methods (value-state only; live `ppu_`/`bus_`/
+  `irq_`/`audio_` pointers stay wired across a restore). The
+  blob stores the ROM SHA-1; load refuses a state from a
+  different ROM, a different format version, or a truncated
+  file. BIOS/ROM bytes are NOT serialized — reloaded and
+  hash-verified at launch.
+- **Surfaces:** TCP `savestate_save`/`savestate_load {path}`
+  (see `gbarecomp/TCP.md`), and host-window nine slots —
+  **F1..F9** load slot 1..9, **Shift+F1..F9** save slot 1..9,
+  each backed by a `<rom>.stateN` file.
+- **Verification:** `MinishCapRecomp/tools/savestate_roundtrip.py`
+  proves four properties against the runtime as its own oracle:
+  (1) restore fidelity, (2) deterministic replay from a restored
+  point, (3) byte-identical save→load→save, (4) the gate cleanly
+  rejects tampered magic/version/SHA-1/truncated blobs and the
+  machine stays usable afterward. All green at warmup 40 and 200.
+- **Follow-up (optional, low):** snapshot size is ~553 KB
+  uncompressed; if a slot count grows this could gzip. Not
+  needed for the debug loop.
 
 ---
 
