@@ -190,33 +190,35 @@ crash on the path out of the house through the right door.
   for present) or a memory-state bug (VRAM/PAL/OAM actually
   contains garbage at that moment).
 
-### MC-HP-004: Gameplay runs at roughly 2x real-time
+### MC-HP-004: Gameplay ran at monitor-refresh speed — RESOLVED 2026-05-26
 - **Observed:** 2026-05-25. Entire run (BIOS intro included,
   best estimate) plays back at approximately double speed —
   Zelda walks too fast, dialog auto-advance feels accelerated,
   audio is shifted up.
-- **Detail:** Distinct from `gbarecomp/ISSUES.md` LP-001
-  ("BIOS intro tempo plays slightly fast"). That issue was
-  ~sub-1% drift on the BIOS chime; this is integer-multiple
-  fast.
-- **Suspected cause:** the host frame loop has no real-time
-  pacing — `step_frame` now drives dispatches until PPU
-  `frame_count` advances and then immediately presents, with no
-  wall-clock cap (only SDL audio backpressure regulates rate).
-  If the audio device's queue stays under the threshold that
-  blocks `push_audio_samples`, the loop runs as fast as the host
-  CPU can dispatch. Tonight's frame-pacing change in `29e81ac`
-  is the most likely cause; previously the 1-dispatch-per-frame
-  cap was unintentionally rate-limiting.
-- **Priority:** high — every other timing-sensitive bug
-  (MC-HP-002 hangs, MC-HP-003 transition garbling, audio
-  artifacts) reads differently at 2x and may mask root causes.
-- **Next step:** add wall-clock pacing keyed to the GBA's
-  16.78 MHz cycle budget (or the 59.7 Hz frame rate). Either
-  sleep to a deadline at frame-present time or gate
-  `push_audio_samples` so SDL's queue stays the controlling
-  limiter at the correct rate. Verify with a stopwatch against
-  mGBA over 30 seconds of overworld play.
+- **Root cause (2026-05-26):** the windowed runtime had no
+  wall-clock frame limiter; presentation was gated solely by the
+  SDL renderer's `PRESENTVSYNC`, i.e. the *host monitor's* refresh
+  rate. On the dev machine's 164 Hz panel that is 164 / 59.7275 ≈
+  2.75x real-time (the "roughly 2x" the user saw). Not a mixer or
+  cycle-budget bug — purely host presentation pacing. Distinct from
+  `gbarecomp/ISSUES.md` LP-001 (sub-1% BIOS chime drift), which
+  stands.
+- **Resolution:** added `FramePacer` in
+  `gbarecomp/src/runtime/host_platform.{h,cpp}` — a monotonic
+  wall-clock limiter keyed to the exact GBA frame period
+  (16'777'216 / 280'896 = 59.7275 Hz). Hybrid sleep-then-spin with
+  a 1 ms Windows timer-resolution bump (`timeBeginPeriod`) so the
+  ~16.74 ms target isn't wrecked by the default ~15.6 ms scheduler
+  granularity; resyncs instead of catch-up if it falls a frame
+  behind. `PRESENTVSYNC` removed from the renderer so present()
+  never blocks on the display. Constructed only for windowed runs
+  (headless/TCP batch stays uncapped by design). Hold **Tab** to
+  uncap (fast-forward).
+- **Verification:** user confirmed normal-speed gameplay; 300-frame
+  timed runs land near the 59.7 Hz budget (vs ~0.9 s unpaced).
+- **Note:** this also stops the audio-queue overflow/clear churn
+  that the over-fast loop caused, since frames now arrive at the
+  rate the SDL audio device consumes them.
 
 ### MC-HP-005: Save states — RESOLVED 2026-05-26
 - **Observed:** 2026-05-25. User flagged the absence as a
