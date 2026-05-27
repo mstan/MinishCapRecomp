@@ -107,20 +107,47 @@ crash on the path out of the house through the right door.
   (eager-emit explosion → confirmation gate; weak `!is_undefined`
   gate over-counting → prologue gate). Added `GBARECOMP_NO_JT`
   toggle + a 2M-entry worklist brake (safety net).
-- **Open follow-ups (lower priority):**
-  1. **Computed/offset-base idiom** — the remaining 9 misses
-     (the `0x080FCxxx` file-select cluster + `0x08090880`) load
-     the table base several instructions + `bl` calls before the
-     indexed use, so the in-block base constant doesn't survive
-     to the `ADD`. Needs base-liveness tracking across calls.
-     Bounded effort was spent and the limit accepted (ship 18).
-  2. **Regen speed — RESOLVED (gbarecomp `09ff973`).** Discovery
-     was slow because every branch target was pushed to the
-     worklist and dedup'd only at visit time (~170k of mostly-
-     duplicates). Dedup-at-push cut full discovery+codegen from
-     **minutes to 5.5s** with byte-identical generated output.
-     That was the whole bottleneck; codegen parallelization /
-     content-hash caching are no longer warranted.
+- **HONEST STATUS — the detector does NOT yet fix any real miss
+  (HIGH priority for next session).** Two things were initially
+  over-stated and are corrected here after verification:
+  1. **"27" is a tiny subset, not the population.** The detector
+     CONFIRMED **192** distinct table bases; only 18 overlap the
+     27 manual `[[jump_table]]` hints. So the manual list captured
+     ~10% of even the *confirmed* tables, and the true universe is
+     larger still (computed-base tables are uncounted). "18/27" is
+     recall on a small labeled sample, NOT coverage of the game.
+  2. **The detector EMITS 0 on Minish Cap → output-neutral → it
+     prevents ZERO dispatch misses today.** Of the 192 confirmed:
+     27 are suppressed by manual data_ranges (benign), and the
+     other ~165 fail emit's gate so seed nothing. Generated output
+     is byte-identical to before the detector. Its value is purely
+     latent/future right now.
+  - **Why emit contributes nothing — the prologue gate is too
+    strict.** The validate-and-stop gate requires each entry to
+    point at a `push`/`stmfd sp!` prologue. That stopped the
+    explosion, but it REJECTS real jump tables whose targets are
+    not push-prologues (switch-case labels, handlers that open with
+    e.g. `add r0,r4,#0`). This directly blocks the MC-HP-001 door
+    crash: its table is at `0x0804B1D0`, target `0x0804B208` opens
+    with `add r0,r4,#0` (not a push) → rejected. **Next session:
+    replace the prologue gate with a better count-terminator** —
+    prefer the dispatcher's `CMP index,#N; BHI/BCS default` bound
+    when present (exact count, no guessing), else a code-vs-data
+    discriminator that accepts non-prologue code but still rejects
+    data pointers.
+  - **Open idiom gaps:** (a) computed/offset base loaded several
+    instructions + `bl` calls before the indexed use (in-block base
+    const doesn't survive) — the `0x080FCxxx` file-select cluster +
+    `0x08090880`; (b) IWRAM-copied dispatchers, where PC-relative
+    literal-pool base resolution is wrong because the finder walks
+    ROM source bytes (`0x080B…`) but runtime PC is IWRAM (`0x0300…`)
+    — suspected for MC-HP-001 (see user recollection there).
+- **Regen speed — RESOLVED (gbarecomp `09ff973`).** Discovery was
+  slow because every branch target was pushed to the worklist and
+  dedup'd only at visit time (~170k of mostly-duplicates).
+  Dedup-at-push cut full discovery+codegen from **minutes to 5.5s**
+  with byte-identical generated output. That was the whole
+  bottleneck; codegen parallelization / caching are not warranted.
 
 ### MC-HP-001: Crash when Link walks through the right-side door on Link's-house ground floor
 - **Observed:** 2026-05-25. After the Zelda cutscene resolves and
@@ -132,19 +159,37 @@ crash on the path out of the house through the right door.
   function; not recompiled, or function-finder didn't reach it)`.
   Trace ring shows a long call chain inside `0x0804Bxxx` before
   the miss. Cart address; needs a function entry.
-- **Suspected cause:** function-finder didn't reach `0x0804B208` —
-  likely an indirect-call / table edge that the discovery pass
-  doesn't currently follow. This is the "dispatch miss is a silent
-  game-breaking bug" rule firing as designed (per
-  `gbarecomp/CLAUDE.md` DISPATCH MISS RULE).
-- **Priority:** high — blocks all gameplay past the opening room.
-- **Proper fix gated by:** MC-HP-000. The immediate `extra_func`
-  unblock is acceptable for triage; the long-term fix is for the
-  function-finder to discover `0x0804B208` without a manual hint.
-  Closing this with another `extra_func` line and skipping the
-  finder audit would convert this entry into permanent tech debt
-  and guarantee a near-identical miss next time we cross a new
-  room boundary.
+- **STILL OPEN — verified 2026-05-26.** `0x0804B208` is absent
+  from the committed generated output (no dispatch entry near it),
+  so the miss persists. The MC-HP-000 jump-table detector does
+  **NOT** fix it (the detector is output-neutral on Minish Cap —
+  see MC-HP-000 "honest status").
+- **Investigated 2026-05-26 (Ghidra):** `0x0804B208` is referenced
+  as a DATA word from `0x0804B1D0` → it is an entry in a
+  code-pointer **table at `0x0804B1D0`** (a jump/function-pointer
+  table). Bytes at `0x0804B208` = `20 1c 00 f0 47 f8` =
+  `add r0,r4,#0 ; bl …` — real THUMB code, but it does **not** open
+  with a `push` prologue. So the detector's prologue entry-gate
+  would reject this table even if the dispatcher were walked. This
+  table is NOT one of the 27 manual entries.
+- **User recollection (lead to verify):** a prior session indicated
+  the relevant function is "loaded from in-RAM." Fits an
+  **IWRAM-copied dispatcher** (cf. the `iwram_funcs` `[[code_copy]]`,
+  ROM `0x080B197C` → IWRAM `0x030056F0`): such code runs at an IWRAM
+  PC while the finder walks ROM source bytes, so PC-relative
+  literal-pool base resolution (how the dispatcher loads the table
+  base) computes the wrong address → detection fails. NEXT SESSION:
+  confirm via runtime trace whether the door dispatcher is an
+  IWRAM-copied function and whether its table-base load is
+  PC-relative.
+- **Priority:** high — blocks all gameplay past the opening room,
+  and is the concrete proof case that MC-HP-000's detector does not
+  yet prevent real misses (prologue gate + IWRAM-PC issue).
+- **Proper fix gated by:** MC-HP-000's entry-gate rework (accept
+  non-prologue code targets) AND IWRAM-copied PC-relative base
+  resolution. A manual `extra_func 0x0804B208` (thumb) remains an
+  acceptable *immediate* unblock to get past the door, but the
+  durable fix is the two MC-HP-000 items above.
 - **Next step:** add `extra_func 0x0804B208` (mode TBD — likely
   `thumb` given surrounding ARM/THUMB context shown in trace) to
   `symbols/minishcap.toml`, regenerate, rebuild. Then run again
