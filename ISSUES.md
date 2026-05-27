@@ -321,6 +321,21 @@ crash on the path out of the house through the right door.
   + its table; extend the finder's base tracking to survive the
   multi-instruction / cross-call base load (base-liveness), regen,
   confirm `0x08062922` emits. Reuses the MC-HP-000 machinery.
+- **FOLLOW-UP IDEA (user, 2026-05-27): seed transition misses
+  programmatically, not crash-and-capture one-by-one.** Screen
+  transitions are the dominant source of these computed-dispatch misses
+  (room-state machines indexing jump/pointer tables). Rather than play
+  to each crash, capture the PC, add a hint, repeat — investigate a
+  systematic pass: e.g. (a) a finder sweep that recognizes the
+  transition-dispatcher idiom family and emits all reachable tables up
+  front; (b) an offline harness that drives the game through many
+  transitions under the runtime's dispatch-miss logger (collecting all
+  miss PCs in one pass, then bulk-resolving them in the finder — NOT as
+  permanent TOML hints, but as proof cases to harden the heuristics);
+  (c) cross-reference the decomp's known dispatcher/table symbols to
+  pre-validate finder coverage. Goal: drive the transition-miss count to
+  zero by improving discovery, so no per-crash whack-a-mole. Tie to
+  MC-HP-000's open computed/offset-base idiom gap.
 
 ### MC-HP-002: Long unresponsive hangs at cutscene boundaries
 - **Observed:** 2026-05-25. Two distinct multi-second hangs during
@@ -333,27 +348,55 @@ crash on the path out of the house through the right door.
   correctly (Image #2 "Good morning, Master Smith" renders fine
   afterwards). Host window stops pumping messages while blocked,
   which is what triggers Windows' unresponsive flag.
-- **Suspected cause:** a single recompiled function (or tight
-  inner loop) running for hundreds of millions of dispatches
-  without ever crossing a PPU frame boundary, so `step_frame`'s
-  loop and the in-loop `pump_host_input` (every 512 dispatches in
-  `step_once`) keep firing — but the per-frame pump only happens
-  *between* recompiled function returns, and if a single dispatch
-  runs unbounded (intro logic doing CPU-only work), the OS message
-  pump starves. Could also be a busy-wait waiting on a hardware
-  event that the recomp isn't ticking (timer, audio FIFO,
-  serial). Need a trace at the moment of the hang to confirm.
-- **Priority:** high — UX-breaking, and "spins forever" can mask
-  a real divergence (e.g., waiting on an IRQ that never fires).
-- **Next step:** during a hang, capture `runtime_trace` over TCP
-  and look for: (a) PC stuck in a small range (busy-wait), (b) IE
-  / IME / VCOUNT-style I/O reads with no progress, (c) timer
-  state that should advance but isn't. Independently, give the
-  host window an OS message pump on a watchdog timer so the
-  "Not Responding" flag goes away even when the recomp is
-  computing — but only after we know what the recomp is actually
-  doing, since making the symptom invisible is the wrong fix if
-  the underlying spin is a bug.
+- **ROOT-CAUSED 2026-05-27 — a busy-loop in the M4A SOUND ENGINE, i.e.
+  a sound data/state DIVERGENCE, NOT raw recompiler slowness.** A
+  guest-PC sampling profiler (background thread sampling `g_cpu.R[15]`,
+  added as `GBARECOMP_SAMPLE` tooling in `runtime_bus_bridge.cpp`) on an
+  overworld screen-scroll transition (state3 + Up) showed **~95% of the
+  ~90s is spent at PCs `0x08004286` / `0x0800428C`** — a tiny loop. The
+  enclosing routine at `0x08004260` is M4A track setup (stores a track
+  id at `[r0+0x58]`, indexes the song table at literal `0x0800439C` by
+  `[r0+0x12]`, stores the resulting stream pointer to `[r0+0x5c]`); the
+  loop at `0x08004284` is the **sequence/duration walker** — reads bytes
+  from the track stream `[r0+0x5c]`, accumulates `r2`, advances `r1+=4`,
+  loops on a bit7 continue/wrap flag, exits when `r2 > 0`. It iterates
+  ~tens of millions of times where a sound update is a few hundred → the
+  walker is reading wrong/garbage track data (bad song index `[r0+0x12]`
+  or bad stream pointer), so it over-walks until `r2` accidentally goes
+  positive. The single sound call doesn't return, so the PPU clock
+  advances ~445 frames "inside" it (per-instruction ticks) and the host
+  pump starves → "Not Responding"; it "recovers" when the walk finally
+  exits. This is the same class as the intro/Zelda-entry freezes (all at
+  music/sound transitions).
+- **Every performance hypothesis was WRONG (disproven by measurement,
+  each ~88s, unchanged):** -O0 vs `-O3 -DNDEBUG`; the dispatch-table
+  binary search (→ O(1) hash index); per-instruction device ticking (→
+  lazy/batched `runtime_tick`); the always-on trace ring
+  (`GBARECOMP_NOTRACE`); and the per-instruction call "barriers" (→
+  inlined `runtime_tick`/`runtime_should_yield`). None moved the needle
+  because the cost is **iteration count in a divergent loop**, not
+  per-op speed. The sampler is what finally localized it — keep it.
+- **Likely tie-in: the IWRAM-copied sound engine** (`sound_main_ram`
+  `[[code_copy]]`). If the sound driver code or its state/data in IWRAM
+  isn't set up correctly (wrong copy, wrong song-table base, stale
+  pointer at `[r0+0x5c]`/`[r0+0x12]`), the walker reads garbage. The
+  M4A song table is at literal `0x0800439C`.
+- **Next step:** compare against the mGBA oracle at this transition —
+  on HW the walker exits in a few iterations. Capture the sound-engine
+  state (`r0` struct, `[r0+0x12]` song index, `[r0+0x5c]` stream ptr,
+  the bytes at that ptr) at the spin and diff vs the oracle's. Needs a
+  PC breakpoint at `0x08004286` over TCP (the spin is inside one
+  `runtime_dispatch`, so step granularity can't enter it — ADD a
+  breakpoint command). Then trace back how that pointer/index was set
+  (the `sound_main_ram` copy + song load on transition).
+- **Disposition of the perf changes (uncommitted):** O(1) dispatch
+  index, lazy `runtime_tick`, inlined hooks + halt mirror, guest-PC
+  sampler. They are correct *general* improvements but do NOT fix this
+  issue and the lazy-tick/inline-hooks touch the timing model (BIOS-gate
+  risk, unverified). Decide whether to keep (with BIOS-intro re-verify)
+  or revert to keep the tree clean while the real sound-engine fix is
+  pursued. The sampler is worth keeping as gated tooling.
+- **Priority:** high — UX-breaking on every music/sound transition.
 
 ### MC-HP-003: Severe screen garbling during Zelda's room-transition
 - **Observed:** 2026-05-25. During the cutscene transition where
