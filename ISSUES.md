@@ -114,11 +114,13 @@ crash on the path out of the house through the right door.
      indexed use, so the in-block base constant doesn't survive
      to the `ADD`. Needs base-liveness tracking across calls.
      Bounded effort was spent and the limit accepted (ship 18).
-  2. **Regen speed** — discovery is slow on this 16 MB ROM
-     because every branch target is pushed to the worklist and
-     dedup'd only at visit time (worklist bloats to ~170k of
-     mostly-duplicates). Cheap win: dedup-at-push. Defer codegen
-     parallelization / content-hash caching until profiled.
+  2. **Regen speed — RESOLVED (gbarecomp `09ff973`).** Discovery
+     was slow because every branch target was pushed to the
+     worklist and dedup'd only at visit time (~170k of mostly-
+     duplicates). Dedup-at-push cut full discovery+codegen from
+     **minutes to 5.5s** with byte-identical generated output.
+     That was the whole bottleneck; codegen parallelization /
+     content-hash caching are no longer warranted.
 
 ### MC-HP-001: Crash when Link walks through the right-side door on Link's-house ground floor
 - **Observed:** 2026-05-25. After the Zelda cutscene resolves and
