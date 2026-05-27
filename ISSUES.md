@@ -381,14 +381,39 @@ crash on the path out of the house through the right door.
   isn't set up correctly (wrong copy, wrong song-table base, stale
   pointer at `[r0+0x5c]`/`[r0+0x12]`), the walker reads garbage. The
   M4A song table is at literal `0x0800439C`.
-- **Next step:** compare against the mGBA oracle at this transition —
-  on HW the walker exits in a few iterations. Capture the sound-engine
-  state (`r0` struct, `[r0+0x12]` song index, `[r0+0x5c]` stream ptr,
-  the bytes at that ptr) at the spin and diff vs the oracle's. Needs a
-  PC breakpoint at `0x08004286` over TCP (the spin is inside one
-  `runtime_dispatch`, so step granularity can't enter it — ADD a
-  breakpoint command). Then trace back how that pointer/index was set
-  (the `sound_main_ram` copy + song load on transition).
+- **CONFIRMED 2026-05-27 — the corrupt value is the M4A track stream
+  pointer.** Added a TCP `set_break_pc` command (runtime_should_yield
+  unwinds the dispatch when guest PC == target; one-shot, since the
+  post-break PC is mid-function and re-dispatch would miss). Broke at
+  `0x08004286` during the transition: sound track struct at IWRAM
+  **`0x030018D0`**, `songidx[+0x12]=0`, `[+0x58]=0`, `[+0x59]=0`, and
+  **`trackptr[+0x5c]=0x00000004`** (garbage — points into the BIOS/null
+  region). So `r1=0x4`, the walker reads bytes from `0x5…` and
+  accumulates garbage → spins. The corruption is `[0x030018D0+0x5c]`.
+- **TRACED 2026-05-27 — the engine is processing song 0 (a NULL song)
+  and walking its garbage track.** Caught the writer with
+  `GBARECOMP_ABORT_ON_MEM_WRITE_ADDR=0x0300192C`: it's `pc=0x08004270`
+  (`str r1,[r0,#0x5c]`) inside the M4A track setup at `0x08004260`, fed
+  by `ldr r2,[songtable,songidx<<4]` at `0x0800426A` returning **r2=0**
+  for **songidx=0**. The song table base is `0x080029B4` (from literal
+  `0x0800439C`), and **ROM `[0x080029B4]` is genuinely all-zero** (the
+  first 16 bytes are 0; real song entries begin at `0x080029C4`). So
+  song 0 = "no song"/null and the recomp read the table CORRECTLY — it
+  is NOT a memory/codegen read divergence. The bug is upstream control
+  flow: the engine runs track-setup for song 0 and then walks
+  `[null track]` → reads address ~0 (BIOS) as sequence data → spins.
+- **Open question for the fix (needs the mGBA oracle):** on hardware,
+  does the M4A engine reach this setup/walker for song 0 / an inactive
+  channel at all? Either (a) the channel/track should be marked inactive
+  and skipped (a flag in the `0x030018D0` struct the recomp sets wrong),
+  or (b) `songidx`/the song-load on transition should be a real song
+  number, not 0. Next: diff the M4A SoundInfo/track state
+  (`0x030018D0…`) and the control path into `0x08004260` against mGBA at
+  the same transition; trace how this channel got marked active with a
+  null song.
+- **Tooling added (kept, gated/zero-overhead):** `GBARECOMP_SAMPLE`
+  guest-PC sampler + a TCP `set_break_pc` command (one-shot unwind at a
+  guest PC, since the spin lives inside one `runtime_dispatch`).
 - **Disposition of the perf changes (uncommitted):** O(1) dispatch
   index, lazy `runtime_tick`, inlined hooks + halt mirror, guest-PC
   sampler. They are correct *general* improvements but do NOT fix this
