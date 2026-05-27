@@ -189,15 +189,35 @@ crash on the path out of the house through the right door.
   re-measuring that each removed base still emits from auto-detection
   (a few, e.g. the computed-base `0x080FCxxx` cluster, the detector
   does NOT yet catch — those must stay; see the open idiom gaps).
-- **Remaining work (next):** (a) the **1 unsized reject** — a confirmed
-  table with no recoverable CMP bound whose walk found <2 code entries;
-  inspect and decide if the discriminator is too strict or it is a true
-  negative. (b) the **computed/offset-base idiom** (`0x080FCxxx`
-  file-select cluster + `0x08090880`) where the base const is loaded
-  several instructions + `bl` calls before the indexed use, so the
-  in-block base doesn't survive — needs base-liveness across calls.
-  (c) genuinely IWRAM-copied dispatchers (none on the MC-HP-001 path —
-  see MC-HP-001).
+- **Progress (2026-05-26c) — inverted `BLS`/`BCC` guard + cross-block
+  bound; emit 162 → 163, unsized rejects 1 → 0.** Resolved the lone
+  unsized reject (table `0x08018798`), which had surfaced as a NEW
+  dispatch-miss crash on first exit from Link's house (miss at
+  `pc=0x080189A4`; trace showed a `MOV pc` dispatch off base
+  `0x08018798`). Two compounding causes, both fixed in the finder:
+  1. **Inverted guard.** Its dispatcher uses
+     `cmp r0,#0x1c; bls <dispatch>; b <default>` — the in-range branch
+     goes TO the dispatch (taken), not away to the default. The
+     CMP-bound capture only recognized `B{hi,cs}` (taken→default). Now
+     it also handles `B{ls,cc}`: HI/LS bound at N, CS/CC at N-1,
+     regardless of branch direction.
+  2. **Cross-block bound.** Because the `bls` target is the dispatch,
+     the finder walks it as its own seed with fresh tracker state, so
+     the bound recovered at the compare never reached the `mov pc`
+     walk (hence `bound=no` → unsized → rejected). Added
+     `branch_target_bounds_`: for the inverted form the bound is parked
+     keyed by the dispatch-target PC and re-seeded into `reg_bound` when
+     that seed is walked. `0x08018798` now emits `bound=yes want=29
+     got=29`; `pc=0x080189A4` is a generated function. Functions
+     44,376 → 44,424. (gbarecomp build clean; boot smoke clean.)
+- **Remaining work (next):** (a) the **computed/offset-base idiom**
+  (`0x080FCxxx` file-select cluster + `0x08090880`) where the base
+  const is loaded several instructions + `bl` calls before the indexed
+  use, so the in-block base doesn't survive — needs base-liveness
+  across calls. (b) genuinely IWRAM-copied dispatchers (none on the
+  house-intro path so far). (c) shrink the now-redundant manual
+  `[[jump_table]]` hints (31 overlap auto-detection), one at a time,
+  re-measuring each still emits.
 
 ### MC-HP-001: Crash when Link walks through the right-side door on Link's-house ground floor
 - **Observed:** 2026-05-25. After the Zelda cutscene resolves and
@@ -209,11 +229,14 @@ crash on the path out of the house through the right door.
   function; not recompiled, or function-finder didn't reach it)`.
   Trace ring shows a long call chain inside `0x0804Bxxx` before
   the miss. Cart address; needs a function entry.
-- **STATUS 2026-05-26b: root cause fixed in the finder; pending the
-  one-line behavioral door-walk confirmation (see bottom of entry).**
-  Superseded the earlier "STILL OPEN / detector output-neutral" note:
-  the MC-HP-000 rework now emits this table and `0x0804B208` is a
-  generated dispatchable function.
+- **RESOLVED 2026-05-26c — user-confirmed.** The MC-HP-000 rework
+  emits the table and `0x0804B208` is a generated dispatchable
+  function; the user walked Link through the right door and the side
+  room + full scene now play with no `exit 3`. (Superseded the earlier
+  "STILL OPEN / detector output-neutral" note.) A follow-on dispatch
+  miss on the *first exit from the house itself* (`0x080189A4`) was
+  also fixed — see MC-HP-000 progress 2026-05-26c. A further miss on a
+  later transition (`0x08062922`) is tracked as MC-HP-006.
 - **Investigated 2026-05-26 (Ghidra):** `0x0804B208` is referenced
   as a DATA word from `0x0804B1D0` → it is an entry in a
   code-pointer **table at `0x0804B1D0`** (a jump/function-pointer
@@ -268,6 +291,36 @@ crash on the path out of the house through the right door.
   now generated and room transitions run miss-free, this is a
   confirmation, not a risk: walk Link out the right door from
   `state_postcut` (or a fresh play) and confirm no abort. Then close.
+
+### MC-HP-006: Dispatch miss at 0x08062922 on a later screen transition
+- **Observed:** 2026-05-26c. After the MC-HP-001 + house-exit fixes,
+  the user played well past the opening (frame ~38,550, new save
+  states made) and hit `runtime_arm: dispatch miss for pc=0x08062922`
+  (`exit 3`) on a later screen transition.
+- **Trace (always-on ring):** the miss is reached via an indirect
+  dispatch out of the function at `0x08062834`
+  (`push {r4-r7,lr}; ... ldrb r4,[r5,#0xa]; lsl r0,r4,#2; ...`),
+  landing on `0x08062922` with `r0=0x08062922` (a computed PC). Ghidra
+  shows `0x08062900` as DATA (no instructions) — i.e. there is a
+  jump/pointer table around there. So this is almost certainly the
+  **same MC-HP-000 class** (a computed/indirect dispatch the finder
+  hasn't sized/emitted yet), NOT a new failure mode.
+- **Likely the computed/offset-base idiom** flagged in MC-HP-000's
+  open gaps: `0x08062834` scales `r4` (a struct field) and adds a
+  literal-pool base several instructions before the indexed use, so
+  the in-block base const may not survive to the indexed load.
+- **Status: DEFERRED (per user direction 2026-05-26c).** We are
+  pivoting to the pervasive transition **hangs (MC-HP-002)** and
+  **garbling (MC-HP-003)** first — they affect *every* transition and
+  are general-purpose framework issues expected to pay dividends on
+  these later PC misses (the transition machinery is the common
+  thread). Note the discipline tension: DEBUG.md RULE 0a says clear
+  dispatch misses before other debugging; this is a deliberate,
+  user-directed exception with the miss documented for return.
+- **Next step (when resumed):** Ghidra-map the `0x08062834` dispatcher
+  + its table; extend the finder's base tracking to survive the
+  multi-instruction / cross-call base load (base-liveness), regen,
+  confirm `0x08062922` emits. Reuses the MC-HP-000 machinery.
 
 ### MC-HP-002: Long unresponsive hangs at cutscene boundaries
 - **Observed:** 2026-05-25. Two distinct multi-second hangs during
