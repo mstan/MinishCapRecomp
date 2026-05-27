@@ -148,6 +148,56 @@ crash on the path out of the house through the right door.
   Dedup-at-push cut full discovery+codegen from **minutes to 5.5s**
   with byte-identical generated output. That was the whole
   bottleneck; codegen parallelization / caching are not warranted.
+- **Progress (2026-05-26b) — the detector now EMITS real coverage;
+  emit went 0 → 162 tables.** The honest-status blockers above are
+  fixed in the function finder (`emit_jump_table` + the index trackers).
+  Two coupled root causes, both found with the Ghidra literal oracle
+  against MC-HP-001's table:
+  1. **Mode bug.** A `MOV pc,Rt` dispatcher is a *non-interworking*
+     PC write — it keeps the dispatcher's current mode, so the table
+     words carry no thumb bit and every target inherits the
+     dispatcher's mode. The old emit always derived mode from `raw&1`,
+     so it mis-seeded MC-HP-001's even THUMB targets (e.g. `0x0804B208`)
+     as ARM. Confirmation now records the dispatch kind (`BX`/`bx`-veneer
+     → per-entry bit0; `MOV pc` → inherit `entry_mode`) and emit honors
+     it.
+  2. **Count terminator.** The strict "stop at first non-`push`
+     prologue" gate rejected every switch table whose cases aren't
+     function entries. Replaced with: (primary) an EXACT entry count
+     from the dispatcher's `CMP index,#N; B{hi,cs} default` bound,
+     captured at the compare and carried through the
+     scale→add→indexed-load chain (`reg_bound`→`reg_scaled`→
+     `reg_table`→`pend.count`); (fallback, unbounded) a code-vs-data
+     discriminator that accepts non-prologue code (alignment + in-ROM +
+     not-in-data + a strict multi-instruction defined-decode) but still
+     rejects data words.
+- **Measured (gbarecomp build + regen, deterministic):** 194 distinct
+  confirmed table bases → **162 emitted (2182 targets)**, 31 benign
+  overlaps with the manual `[[jump_table]]` hints (their bytes are
+  already a data_range, so the walk yields nothing — this is the
+  detector independently rediscovering the hand-annotated tables, with
+  matching counts), **1** unsized reject, **0** genuine bound
+  mismatches. Total emitted functions **42,991 → 44,376** (+1,385 real
+  functions previously unreachable by discovery) — bounded growth, no
+  explosion, discovery converged. `GBARECOMP_JT_REPORT=1` dumps the
+  per-table decision to stderr; the summary now prints
+  `jt_confirm_events` + the distinct emitted/overlap/rejected split.
+- **The 31 overlaps mean the manual hint list is now largely
+  redundant** and can shrink (feedback_toml_is_supplement: hint count
+  should drop as heuristics land). Removing the auto-rediscovered
+  `[[jump_table]]` entries is a safe follow-up — do it one at a time,
+  re-measuring that each removed base still emits from auto-detection
+  (a few, e.g. the computed-base `0x080FCxxx` cluster, the detector
+  does NOT yet catch — those must stay; see the open idiom gaps).
+- **Remaining work (next):** (a) the **1 unsized reject** — a confirmed
+  table with no recoverable CMP bound whose walk found <2 code entries;
+  inspect and decide if the discriminator is too strict or it is a true
+  negative. (b) the **computed/offset-base idiom** (`0x080FCxxx`
+  file-select cluster + `0x08090880`) where the base const is loaded
+  several instructions + `bl` calls before the indexed use, so the
+  in-block base doesn't survive — needs base-liveness across calls.
+  (c) genuinely IWRAM-copied dispatchers (none on the MC-HP-001 path —
+  see MC-HP-001).
 
 ### MC-HP-001: Crash when Link walks through the right-side door on Link's-house ground floor
 - **Observed:** 2026-05-25. After the Zelda cutscene resolves and
@@ -159,11 +209,11 @@ crash on the path out of the house through the right door.
   function; not recompiled, or function-finder didn't reach it)`.
   Trace ring shows a long call chain inside `0x0804Bxxx` before
   the miss. Cart address; needs a function entry.
-- **STILL OPEN — verified 2026-05-26.** `0x0804B208` is absent
-  from the committed generated output (no dispatch entry near it),
-  so the miss persists. The MC-HP-000 jump-table detector does
-  **NOT** fix it (the detector is output-neutral on Minish Cap —
-  see MC-HP-000 "honest status").
+- **STATUS 2026-05-26b: root cause fixed in the finder; pending the
+  one-line behavioral door-walk confirmation (see bottom of entry).**
+  Superseded the earlier "STILL OPEN / detector output-neutral" note:
+  the MC-HP-000 rework now emits this table and `0x0804B208` is a
+  generated dispatchable function.
 - **Investigated 2026-05-26 (Ghidra):** `0x0804B208` is referenced
   as a DATA word from `0x0804B1D0` → it is an entry in a
   code-pointer **table at `0x0804B1D0`** (a jump/function-pointer
@@ -185,20 +235,39 @@ crash on the path out of the house through the right door.
 - **Priority:** high — blocks all gameplay past the opening room,
   and is the concrete proof case that MC-HP-000's detector does not
   yet prevent real misses (prologue gate + IWRAM-PC issue).
-- **Proper fix gated by:** MC-HP-000's entry-gate rework (accept
-  non-prologue code targets) AND IWRAM-copied PC-relative base
-  resolution. A manual `extra_func 0x0804B208` (thumb) remains an
-  acceptable *immediate* unblock to get past the door, but the
-  durable fix is the two MC-HP-000 items above.
-- **Next step:** add `extra_func 0x0804B208` (mode TBD — likely
-  `thumb` given surrounding ARM/THUMB context shown in trace) to
-  `symbols/minishcap.toml`, regenerate, rebuild. Then run again
-  and walk the same path; check `dispatch_misses.log` for the next
-  follow-on miss and iterate until the doorway transition completes.
-  Once a clean traversal exists, *do not close this issue* —
-  hand it to MC-HP-000 with the xref data (caller PC, branch type,
-  table source if any) so the audit pass has a concrete first
-  case to validate the new heuristic against.
+- **ROOT-CAUSE FIXED via MC-HP-000 (2026-05-26b) — NO manual hint
+  used.** Ghidra ground truth corrected the table geometry: the base
+  is **`0x0804B1CC`** (the `0x0804B1D0` in earlier notes is entry[1]);
+  the dispatcher at `0x0804B1B6` is
+  `ldrb r0,[r4]; sub r0,#1; cmp r0,#0xc; bhi 0x0804B252;
+  lsl r0,#2; ldr r1,[=0x0804B1CC]; add r0,r0,r1; ldr r0,[r0];
+  mov pc,r0` — a **13-entry `MOV pc` switch table**, all targets THUMB
+  (even, mode inherited from the dispatcher; `0x0804B208` opens
+  `add r0,r4,#0`). This was NOT an IWRAM case: the dispatcher lives at
+  `0x0804B1xx`, well below the `iwram_funcs` code_copy window
+  (`0x080B197C+`). The two MC-HP-000 fixes (mov-pc mode inheritance +
+  CMP-bound terminator) make this table emit: report line
+  `base=0x0804B1CC … MOVpc bound=yes want=13 got=13 -> EMIT`.
+- **Verified — the exact crash PC is now dispatchable.** After regen,
+  all 10 distinct targets (`0x0804B200,B208,B210,B218,B22C,B234,B23C,
+  B244,B24C,B252`) have entries in `generated/dispatch_table.cpp`;
+  `0x0804B208` — the literal PC in the dispatch-miss abort — is emitted
+  as `autojt_0804B1CC_01`. The dispatch miss for that PC is
+  structurally impossible now.
+- **Runtime validation done:** cold-boot 600 frames clean
+  (`dispatch_misses.log` empty); from the user's cutscene save state,
+  drove the full intro conversation to controllable gameplay (Link
+  moves freely in all directions) — ~7,000 frames, **zero dispatch
+  misses, zero crashes**, vs the old build's `exit 3` on a room
+  transition. A `state_postcut` checkpoint was saved
+  (`roms/minishcap_usa.state_postcut`) so the final step is cheap.
+- **Remaining (manual, ~seconds):** the *exact* right-door-of-ground-
+  floor traversal hasn't been walked end-to-end (it sits behind the
+  long intro cutscene + pixel-precise stair navigation that blind TCP
+  scripting couldn't reach efficiently). Given the exact crash PC is
+  now generated and room transitions run miss-free, this is a
+  confirmation, not a risk: walk Link out the right door from
+  `state_postcut` (or a fresh play) and confirm no abort. Then close.
 
 ### MC-HP-002: Long unresponsive hangs at cutscene boundaries
 - **Observed:** 2026-05-25. Two distinct multi-second hangs during
