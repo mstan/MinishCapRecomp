@@ -91,6 +91,34 @@ crash on the path out of the house through the right door.
   reach, but the goal is for the manual-hint count to *drop*
   with each landed heuristic — a rising count is a regression
   signal.
+- **Progress (2026-05-26, gbarecomp `beaab83`):** Survey done
+  (jump-table recognition was the one universal technique we
+  lacked). Landed automatic **abs32 jump-table detection** in
+  the function finder: confirmation-gated (emit only when the
+  loaded entry is branched to — `BX Rt` / `MOV pc,Rt` /
+  `BL`-into-bx-veneer, incl. the THUMB BL prefix/suffix pair),
+  with a function-prologue entry-validity gate (validate-and-
+  stop). On Minish Cap it confirms **192** distinct table bases
+  and rediscovers **18/27** manual `[[jump_table]]` entries
+  (incl. the canonical `0x08100CBC`) with **zero change to
+  generated output** (42991 functions == baseline; the 27 manual
+  entries stay benignly suppressed by their data_ranges). Two
+  precision bugs were found + fixed via the execution loop
+  (eager-emit explosion → confirmation gate; weak `!is_undefined`
+  gate over-counting → prologue gate). Added `GBARECOMP_NO_JT`
+  toggle + a 2M-entry worklist brake (safety net).
+- **Open follow-ups (lower priority):**
+  1. **Computed/offset-base idiom** — the remaining 9 misses
+     (the `0x080FCxxx` file-select cluster + `0x08090880`) load
+     the table base several instructions + `bl` calls before the
+     indexed use, so the in-block base constant doesn't survive
+     to the `ADD`. Needs base-liveness tracking across calls.
+     Bounded effort was spent and the limit accepted (ship 18).
+  2. **Regen speed** — discovery is slow on this 16 MB ROM
+     because every branch target is pushed to the worklist and
+     dedup'd only at visit time (worklist bloats to ~170k of
+     mostly-duplicates). Cheap win: dedup-at-push. Defer codegen
+     parallelization / content-hash caching until profiled.
 
 ### MC-HP-001: Crash when Link walks through the right-side door on Link's-house ground floor
 - **Observed:** 2026-05-25. After the Zelda cutscene resolves and
