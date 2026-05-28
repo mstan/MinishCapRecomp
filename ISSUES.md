@@ -371,6 +371,36 @@ crash on the path out of the house through the right door.
 - **NEW open question (corrected):** why does the entity-script system run
   `InitAnimationForceUpdate` on entity `0x030018D0` with animation index 0
   (an invalid/uninitialised animation) at this transition?
+- **ROOT CLASS FOUND 2026-05-28c (interpreter oracle) — the recomp
+  FORCE-ANIMATES A FREED entity that the interpreter correctly SKIPS. It is a
+  recompiler control-flow divergence, NOT a missing anim-id write.** Built an
+  interpreter-as-oracle path: `bios_smoke` now restores a runtime GBAS
+  savestate into the interpreter (maps the recomp `g_cpu` → interpreter
+  `CPUState`, drops the recomp host call-stack, skips the ROM-SHA gate). New
+  `oracle/diff_anim.py` runs the recomp (19842) and the interpreter (19844)
+  from the same `state3`, holds Up, and diffs `gEntities[0x030018D0]+0x12`
+  each frame. Result:
+  ```
+  @load  both = {animIdx=323, kind=6}  IDENTICAL
+  f1-38  both animIdx=323 (entity alive, animating normally)
+  f39    recomp -> {animIdx=0, kind=0, ALL-ZERO}   interp -> still {323,kind6}  DIVERGE
+  f40    interp also zeroes (entity freed one frame LATER)
+  f47    recomp SPUN                                 interp runs fine to f54+
+  ```
+  So the entity is deleted/zeroed (kind=0) on BOTH — but the recomp (a) frees
+  it ~1 frame EARLY and (b) then runs the animation path on the dead kind=0
+  slot (`animIdx=0` -> `animTable[0]`=NULL -> spin), while the interpreter
+  NEVER animates the freed slot. Since both execute the same ARM, the recomp
+  diverges in control flow: it processes an entity through
+  `ExecuteScriptAndHandleAnimation` (0x0807DD94, called from ~20 per-entity
+  update sites) that the interpreter's iteration skips. The dead-entity
+  skip-guard lives in the higher entity main-loop (iterates `gEntities`,
+  dispatches per-entity updates). NEXT: localize the exact divergent branch —
+  either a mis-translated kind==0/active guard, or an ordering/timing skew
+  (the ~1-frame-early free is consistent with the known recomp frame-count
+  skew) that exposes the slot to animation in the same frame it is freed.
+  This supersedes the "missing +0x12 write" framing below (the write isn't
+  missing — the entity is simply dead when animated).
 - **NARROWED 2026-05-28b — the slot is FREED + REALLOCATED during the room
   transition, and the new entity's anim index `[+0x12]` is never set.**
   `0x030018D0` is an entry in `gEntities` (0x030015A0); `gRoomTransition`
