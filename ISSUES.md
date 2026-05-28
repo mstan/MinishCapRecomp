@@ -371,6 +371,35 @@ crash on the path out of the house through the right door.
 - **NEW open question (corrected):** why does the entity-script system run
   `InitAnimationForceUpdate` on entity `0x030018D0` with animation index 0
   (an invalid/uninitialised animation) at this transition?
+- **FULL CAUSAL CHAIN 2026-05-28d — localized to a ~1-FRAME TIMING SKEW that
+  exposes a priority-paused cutscene object to a force-animate.** Deep named
+  trace (GBARECOMP_TRACE_DUMP_DEPTH=4000) gives the path:
+  `ObjectUpdate(0x080174A4) → EntityDisabled(0x0805E3B0) → [guard] → table[id]
+  handler via _call_via_r1 → CutsceneOrchestrator(0x08094A0C) →
+  InitScriptForNPC(0x0807DD50) → ExecuteScriptAndHandleAnimation → … →
+  InitAnimationForceUpdate → UpdateAnimationVariableFrames (spin)`. The
+  spinning entity is a **priority-1 cutscene object (id 0x69)**. `ObjectUpdate`
+  guards the handler call with `EntityDisabled`: it returns "disabled" when the
+  global **`gPriorityHandler`** (0x03003DC0, via literal 0x0805E3DC; plus a
+  `gMessage`@0x02000050 clamp) exceeds the entity's priority level
+  (`entity[0x11]&0xF` = 1) — i.e. a cutscene/transition raises `gPriorityHandler`
+  to PAUSE low-priority background objects. `diff_anim.py` (recomp vs interp
+  from state3+Up) shows the smoking gun: the recomp runs **~1 frame AHEAD** —
+  it frees the old entity at f39 (interp f40) and raises `gPriorityHandler`
+  0→0x07 at f40 (interp f41). That 1-frame phase offset lets the recomp update
+  the cutscene object in a frame/order where `gPriorityHandler` is still low
+  (object NOT yet paused) **and** its animation isn't set (animIdx 0) → force-
+  animate → spin; the interpreter, a frame behind, has the object paused by the
+  time it would animate, so it never force-animates it. This matches the prior
+  session's deprioritized "recomp frame_count ahead of interp" observation —
+  so the symptom-level FIX is in the runtime TIMING model (why the recomp
+  advances ~1 frame ahead through a transition): wake-from-halt IRQ delivery
+  phase (bios_smoke applies kGbaIrqDelayCycles=7; the recomp delivers
+  immediately) and/or frame-boundary/cycle pacing are the prime candidates,
+  now promoted from "parity nicety" to "the cause of this hang". NEXT: confirm
+  the skew is causal by aligning the recomp's IRQ-delivery/frame phase to the
+  interpreter and re-running diff_anim (expect the spin to vanish), then fix
+  the timing source in the runtime.
 - **ROOT CLASS FOUND 2026-05-28c (interpreter oracle) — the recomp
   FORCE-ANIMATES A FREED entity that the interpreter correctly SKIPS. It is a
   recompiler control-flow divergence, NOT a missing anim-id write.** Built an
