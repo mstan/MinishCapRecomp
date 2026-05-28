@@ -196,6 +196,32 @@ def main():
                         print("    regs:", {k: hex(v) for k, v in regs.items()
                               if k.startswith('r') and isinstance(v, int)},
                               flush=True)
+                        # The break unwound the spinning dispatch, so the
+                        # server is responsive: pull the trace ring and show
+                        # the dispatch/call chain (named) that led here, to
+                        # find the main-loop frame that dispatched this entity.
+                        tr = cl.call(cmd="runtime_trace", count=512)
+                        ents = tr.get("entries") or tr.get("trace") or []
+                        symcache = {}
+                        def nm(pcv):
+                            if pcv not in symcache:
+                                s = cl.call(cmd="symbol", addr=pcv)
+                                symcache[pcv] = (s.get("name"), s.get("offset", 0))
+                            n, o = symcache[pcv]
+                            return f"{n}+0x{o:x}" if n else f"0x{pcv:08x}"
+                        print(f"    --- trace ring ({len(ents)} entries), "
+                              f"dispatch/call events (named) ---")
+                        seen_fns = []
+                        for e in ents:
+                            kind = e.get("kind")
+                            if kind not in (1, 7, 2):  # dispatch, call, exchange
+                                continue
+                            pcv = e.get("pc", 0)
+                            label = nm(pcv)
+                            fn = label.split("+")[0]
+                            if not seen_fns or seen_fns[-1] != fn:
+                                seen_fns.append(fn)
+                                print(f"      {kind:>8} {label}")
                         break
                 else:
                     print("==> no song-start park in 200 frames", flush=True)

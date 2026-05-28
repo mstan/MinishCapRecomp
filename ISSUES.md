@@ -348,6 +348,46 @@ crash on the path out of the house through the right door.
   correctly (Image #2 "Good morning, Master Smith" renders fine
   afterwards). Host window stops pumping messages while blocked,
   which is what triggers Windows' unresponsive flag.
+- **★ CORRECTED AGAIN 2026-05-28 (session 2) — supersedes BOTH the
+  "1-frame-ahead / entity-animation" and the older "M4A" writeups below.
+  The real earliest divergence is in the M4A SOUND engine at frame 40; the
+  animation-walker spin is a DOWNSTREAM symptom.**
+  - **A harness bug invalidated the prior analysis.** The recomp's TCP `step`
+    (runtime.cpp `step_frame`) stopped at scanline-WRAP (`ppu.frame_count()`
+    change, 227→0) while bios_smoke `step_one_frame` and mGBA `runFrame` stop
+    at VBlank-START (159→160) — 68 scanlines apart. So at the same step index
+    the recomp had already run that frame's VBlank IRQ + user VBlank handler
+    and the interp had not → the "recomp runs ~1 frame ahead" was an artifact.
+    `oracle/diff_anim.py` only watched `entity+0x12`/`gPriorityHandler`, which
+    miss this entirely. FIX (gbarecomp): added `g_runtime_vblank_starts`
+    (runtime_bus_bridge.cpp, incremented on `events.vblank_started`);
+    `step_frame` stops on its increment → recomp now parks at VBlank-start like
+    both oracles (verified: both vcount=160, identical frame#). 12/12 ctests
+    green (codegen `tests/codegen/stubs.cpp` also defines the counter).
+  - **Phase-aligned full-IWRAM+EWRAM diff (new `oracle/diff_iwram.py`):** game
+    state is BYTE-IDENTICAL on recomp vs interp through frame 39 (the only diff
+    is a constant ~16-byte VBlank-handler "baseline" = recomp samples after the
+    user handler `tfunc_08016B92`/`DispCtrlSet`+DMA+gMain+0; interp at IRQ-entry
+    pc=0x128 — NOT real divergence). **At frame 40 the game state really
+    diverges**, and the first divergent writes are in **M4A**: a frame-gated
+    watchpoint (new `GBARECOMP_ABORT_ON_MEM_WRITE_MIN_FRAME`) on the
+    sound-channel field `0x03004470` caught `tfunc_080AF976+0x10` (0x080AF986)
+    inside `FadeOutBody`(0x080B0874) → `tfunc_080AF924`(recursive) →
+    `TrkVolPitSet`/`ClearChain`, with the EWRAM divergent addr `0x020381A0`
+    live in r5. Off-by-one signature: recomp 0x0b vs interp 0x0c at channel+0x10
+    and at EWRAM 0x020381a0. The sound work area 0x03004460+ was identical
+    f1..f39, so this is a genuine f40 m4a divergence, not the VBlank sample
+    offset. The anim-walker spin at 0x08004286 (~f46) is the downstream result.
+  - **It IS a recompiler bug:** bios_smoke runs 150 frames hold-Up from the SAME
+    state3 with NO spin. So the prior "entity-animation not M4A" correction was
+    itself wrong — the M4A engine (frame 40) is upstream of the animation hang.
+  - **OPEN:** pin the exact m4a defect — compare recomp vs interp at the m4a
+    function entry in frame 40 with identical inputs (recomp `set_break_pc` +
+    interp `step_inst`-to-PC; `runtime_dispatch` is function-granular so no
+    instruction lockstep). Likely an off-by-one shift/carry/round in an m4a
+    mixer/fade calc. New tools: oracle/diff_iwram.py, phase_probe.py,
+    watch_addrs.py. (gbarecomp memory: project-mc-hp-002-not-cycle-undercount,
+    reference-diff-iwram-phase.)
 - **⚠️ CORRECTION 2026-05-28 — this is the ENTITY-ANIMATION system, NOT
   the M4A sound engine. The 2026-05-27 "M4A / null song 0" diagnosis below
   was a MISDIAGNOSIS** (the prior session pattern-matched the table-indexing
