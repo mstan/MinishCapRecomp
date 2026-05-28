@@ -348,6 +348,44 @@ crash on the path out of the house through the right door.
   correctly (Image #2 "Good morning, Master Smith" renders fine
   afterwards). Host window stops pumping messages while blocked,
   which is what triggers Windows' unresponsive flag.
+- **⚠️ CORRECTION 2026-05-28 — this is the ENTITY-ANIMATION system, NOT
+  the M4A sound engine. The 2026-05-27 "M4A / null song 0" diagnosis below
+  was a MISDIAGNOSIS** (the prior session pattern-matched the table-indexing
+  idiom to an MP2K song table and built diff_m4a.py + the whole sound
+  narrative on it). After landing decomp-symbol names into the runtime
+  trace (new permanent fixture — see below), the named call chain at the
+  spin reads:
+  `HandlePostScriptActions → ExecuteScriptForEntity → HandleEntity0x82Actions
+  → sub_0807DE80 → InitAnimationForceUpdate → (0x08004260 resolver) →
+  UpdateAnimationVariableFrames (spin PC 0x08004286)`. The struct at
+  `0x030018D0` is an ENTITY, not an M4A track; `[+0x12]` is its **animation
+  index**; the table at `*(0x0800439c)=0x080029B4` is the **animation table**
+  (`table[0]=NULL`, `table[1..]=0x08007498` = real animation data; cf. the
+  `gBgAnimations` symbol); `[+0x5c]` is the **animation frame-data pointer**.
+  The mechanism shape from 2026-05-27 still holds (index 0 → null table
+  entry → garbage frame pointer → the variable-frame walker accumulates
+  duration bytes from random memory until it goes positive → spin), but
+  everything labeled "song"/"track"/"M4A"/"sound" should read
+  "animation id"/"entity"/"animation". `diff_m4a.py` is built on the wrong
+  premise; keep it only as a generic state-injection harness.
+- **NEW open question (corrected):** why does the entity-script system run
+  `InitAnimationForceUpdate` on entity `0x030018D0` with animation index 0
+  (an invalid/uninitialised animation) at this transition? Either the entity
+  should not be animated here (a state/active flag), or `[+0x12]` should hold
+  a real animation id and was zeroed by a wider/block re-init (the `+0x12`
+  watchpoint never fires, so it is not a halfword poke). Next: trace the
+  entity (`0x030018D0`) state + the script cmd-0x82 path; map `sub_0807DE80`
+  / the cmd-0x82 handler against the decomp.
+- **PERMANENT FIXTURE LANDED 2026-05-28 — runtime decomp-symbol names.** This
+  bug is the proof case for it: a whole prior session was lost to a wrong
+  "sound" narrative for want of names. The recompiler now emits
+  `generated/symbol_map.cpp` (sorted address→name for all ~44k functions,
+  decomp names where seeded; `gba_recompile --no-symbol-map` to omit), which
+  self-registers into `src/armv4t/symbol_lookup.cpp` (`gba_symbol_lookup`).
+  Every PC in `runtime_trace` dumps, dispatch-miss reports, and the watchpoint
+  abort now prints `<Name+0xoff>`; new TCP `symbol {addr}` command resolves on
+  demand. MinGW-safe (static-init registration, not weak externs). BIOS map
+  (`<0x4000`, separate binary) is a documented follow-up.
 - **ROOT-CAUSED 2026-05-27 — a busy-loop in the M4A SOUND ENGINE, i.e.
   a sound data/state DIVERGENCE, NOT raw recompiler slowness.** A
   guest-PC sampling profiler (background thread sampling `g_cpu.R[15]`,
@@ -414,6 +452,66 @@ crash on the path out of the house through the right door.
 - **Tooling added (kept, gated/zero-overhead):** `GBARECOMP_SAMPLE`
   guest-PC sampler + a TCP `set_break_pc` command (one-shot unwind at a
   guest PC, since the spin lives inside one `runtime_dispatch`).
+- **Re-confirmed 2026-05-28 — root UNCHANGED after this session's
+  per-instruction-cycle regen; the spin is byte-for-byte the same.**
+  Added `MinishCapRecomp/tools/repro_hang.py` — a from-reset TCP driver
+  that (a) navigates title→Start→A→A→idle with screenshots, or (b) with
+  `--state <p> --hold up` loads a savestate and holds a key, detecting the
+  spin by `step` wall-clock timeout (the single-threaded server blocks for
+  the spin's duration), or (c) `--inspect` arms `break_pc` at the walker
+  and dumps the M4A struct at the song-start park. Fast dev repro:
+  `python tools/repro_hang.py --state roms/minishcap_usa.state3 --hold up`
+  → `state3` is the overworld; holding Up scrolls a screen → song-start →
+  **HANG at frame 46.** `--inspect` parks at `0x08004286` frame 46 with
+  `sel@12(songidx)=0, f58=0, f59=0, cmdptr@5c=0x00000004, flags@0=0x10`,
+  regs `r0=r4=0x030018D0 (track), r1=0x4 (walked ptr), r2=0xffffffff
+  (accumulator), r5=0`. Identical to the 2026-05-27 finding. NOTE: blind
+  menu-timing navigation is fragile (the title only accepts input during
+  the blinking "PRESS START" window + an attract cycle); use the savestate
+  repro for the dev loop. The canonical user path is still
+  title→Start→A→A→idle, which hits the same spin at the intro→overworld
+  load and at the Zelda-enters-house transition.
+- **MECHANISM fully disassembled 2026-05-28 (Ghidra, cart).** `0x08004260`
+  is a per-track command-pointer resolver + duration walker (THUMB):
+  ```
+  08004260: strb r1,[r0,#0x58]      ; track[0x58] = r1
+  08004264: ldrh r3,[r0,#0x12]      ; r3 = track[0x12]  ← THE INDEX
+  08004266: lsl  r3,r3,#4           ; ×16  (16-byte table stride)
+  08004268: ldr  r2,[0x0800439c]    ; r2 = *(0x0800439c) = table base
+  0800426a: ldr  r2,[r2,r3]         ; r2 = table[index]   (table[0] = NULL)
+  0800426e: ldr  r1,[r2,r1<<2]      ; r1 = *(NULL + r1*4) = garbage
+  08004270: str  r1,[r0,#0x5c]      ; track[0x5c] = garbage cmd ptr
+  ...walker 08004284..0800429a (spin PC 08004286):
+  08004286: ldrb r3,[r1,#0x1]; add r2,r2,r3; bgt exit; ldrb r3,[r1,#3];
+  add r1,#4; lsr r3,#8 (carry=bit7); bcc loop; else wrap r1-=[r1]<<2.
+  ```
+  So the **root variable is `track[0x12]`** (the per-track song/voicegroup
+  index): it reads **323 at `state3` load, 0 at the spin**. `table[0]` is
+  NULL, so `track[0x5c]` becomes a ~null pointer and the walker accumulates
+  `r2` from random bytes until it goes positive → tens of millions of
+  iterations.
+- **The zeroing of `track[0x12]` is NOT a halfword store** — watchpoint
+  `GBARECOMP_ABORT_ON_MEM_WRITE_ADDR=0x030018E2` (=track+0x12) NEVER fires
+  during the scroll, while the cmdptr watchpoint `0x0300192C` (=track+0x5c)
+  fires at `0x08004270` as expected. So `track[0x12]` was zeroed by a wider
+  / block (re)initialization of the track struct (word store to an aligned
+  base, DMA, or BIOS CpuSet), i.e. **the engine re-initialized this track**
+  rather than a stray halfword poke.
+- **Call chain at the spin (trace ring):** the resolver is reached entirely
+  from INSIDE the M4A engine's per-track processor —
+  `0x0807DE80 → 0x080042AC(push lr; bl 0x08004260)` — operating on track
+  `0x030018D0` with `r1=0`. It is NOT a game-level "play song 0" call; the
+  engine itself is processing this track with index 0. Outer frames sit in
+  `0x0807Cxxx`/`0x0807Dxxx`/`0x0807Exxx` (the sound engine in ROM).
+- **SHARPENED open question (needs oracle or decomp-symbol mapping):** why
+  does the engine process track `0x030018D0` with `track[0x12]==0` here?
+  (a) the track should be marked inactive/skipped (a status/enable flag the
+  recomp sets wrong → engine walks a track it shouldn't), or (b) `track[0x12]`
+  should hold a real index and an upstream divergence zeroed it. Resolving
+  this needs either the mGBA oracle at the same transition (does hardware's
+  engine touch this track / with what index?) or mapping `0x08004260` /
+  `0x0807DE80` and the `track[0x12]` field via the zeldaret/tmc decomp
+  (MP2K). Decomp symbol names are NOT currently in the Ghidra DB.
 - **Disposition of the perf changes (uncommitted):** O(1) dispatch
   index, lazy `runtime_tick`, inlined hooks + halt mirror, guest-PC
   sampler. They are correct *general* improvements but do NOT fix this
@@ -444,6 +542,22 @@ crash on the path out of the house through the right door.
   the half-loaded frame. Could also be DMA timing (HBlank DMA
   used for line-by-line scroll) being executed at the wrong
   cycle phase.
+- **REFRAMED 2026-05-28 — almost certainly a DOWNSTREAM CONSEQUENCE of
+  MC-HP-002, not an independent PPU bug (user's own read, now supported
+  by the mechanism).** The garble appears *while the MC-HP-002 hang frame
+  is on screen* (ISSUES already noted "The application also hangs at the
+  moment the garbled frame is on screen"). During the M4A null-song spin
+  the CPU is frozen inside ONE `runtime_dispatch` (the song-start), yet
+  per-instruction `runtime_tick`s keep advancing the PPU clock ~445
+  frames "inside" that single call — so the PPU keeps latching/presenting
+  while the game's room-load code (the VRAM/tilemap/PAL/OAM rewrite + its
+  DMAs) is BLOCKED mid-sequence. Result: we present the half-written VRAM
+  (Image: shredded tiles, magenta/green blocks) until the spin finally
+  exits and the load completes (destination renders cleanly). **Predicted:
+  fixing the MC-HP-002 spin (the animation walker — see the 2026-05-28
+  correction there) removes this garble.** Validate by
+  re-checking the house-entry transition once MC-HP-002 is fixed; only if
+  garble persists with no hang is there a separate PPU-latch bug to chase.
 - **Priority:** high — visible and persistent across every
   transition we will encounter; will get worse the deeper into
   the game we go.

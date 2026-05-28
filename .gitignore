@@ -110,3 +110,6 @@ __pycache__/
 # Claude auto-memory (per-user, never committed).
 # ─────────────────────────────────────────────────────────────────────
 memory/
+
+# Scratch output from tools/repro_hang.py (screenshots, stderr dumps)
+tools/repro_out/
