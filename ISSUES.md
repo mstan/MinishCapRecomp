@@ -370,12 +370,33 @@ crash on the path out of the house through the right door.
   premise; keep it only as a generic state-injection harness.
 - **NEW open question (corrected):** why does the entity-script system run
   `InitAnimationForceUpdate` on entity `0x030018D0` with animation index 0
-  (an invalid/uninitialised animation) at this transition? Either the entity
-  should not be animated here (a state/active flag), or `[+0x12]` should hold
-  a real animation id and was zeroed by a wider/block re-init (the `+0x12`
-  watchpoint never fires, so it is not a halfword poke). Next: trace the
-  entity (`0x030018D0`) state + the script cmd-0x82 path; map `sub_0807DE80`
-  / the cmd-0x82 handler against the decomp.
+  (an invalid/uninitialised animation) at this transition?
+- **NARROWED 2026-05-28b — the slot is FREED + REALLOCATED during the room
+  transition, and the new entity's anim index `[+0x12]` is never set.**
+  `0x030018D0` is an entry in `gEntities` (0x030015A0); `gRoomTransition`
+  (0x030010A0) is active. Watching the word-aligned `0x030018E0` (covers
+  `+0x10..+0x13`) fires at `<tfunc_0805E818+0x6>` writing `+0x10=1` (a byte),
+  immediately after `zFree` (0x0801DA0C) with `r4=0x030018D0`. That PC is
+  inside **`DeleteEntity`** (0x0805E7BC-0x0805E84B): the slot is being DELETED
+  (`+0x10=1` = deleted flag, then `zFree`) at trace seq ~#265071, yet the SAME
+  slot is force-animated via cmd 0x82 (`HandleEntity0x82Actions`) ~300k events
+  later at the spin (#565696). The `+0x12` anim-index halfword is NEVER written
+  by a traced store in the 46f window (both the `0x18E2` and the first `0x18E0`
+  watchpoints confirm), yet it reads 323 at load and 0 at the spin: zeroed by
+  the delete/free block-init and then NOT re-populated before the
+  force-animate. Smells like a **use-after-delete / slot-reuse ordering
+  divergence** — a deleted (or freshly re-created) entity is run through the
+  script/animation path with a stale/zero anim id. Lifecycle funcs are now all
+  named: GetEmptyEntity, DeleteEntity, DeleteThisEntity,
+  ClearAllDeletedEntities, ExecuteScriptForEntity, HandleEntity0x82Actions. Since the resolver `0x08004260` has no
+  null-index guard, hardware cannot be reaching it with index 0 (the game
+  runs) — so the recomp DIVERGES: it force-animates a freshly-realloc'd
+  entity whose anim id is still 0. Next: identify the `0x0805E8xx`
+  alloc/init function + the cmd-0x82 (`HandleEntity0x82Actions`) path; find
+  where a valid anim id should be written to `[+0x12]` and why the recomp
+  leaves it 0 (a skipped/mis-ordered init, or a wrong script pointer feeding
+  cmd 0x82). The interpreter/mGBA oracle at this point would confirm the
+  intended `[+0x12]`.
 - **PERMANENT FIXTURE LANDED 2026-05-28 — runtime decomp-symbol names.** This
   bug is the proof case for it: a whole prior session was lost to a wrong
   "sound" narrative for want of names. The recompiler now emits

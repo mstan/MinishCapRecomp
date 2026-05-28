@@ -179,8 +179,19 @@ def main():
                     if pc == SPIN_PC:
                         iw = cl.read_region("read_iwram", M4A_STRUCT, M4A_LEN)
                         regs = cl.call(cmd="registers")
-                        print(f"==> SONG-START PARK at frame {i}: "
-                              f"R15=0x{pc:08x}  M4A={m4a_fields(iw)}",
+                        print(f"==> ANIM-WALKER PARK at frame {i}: "
+                              f"R15=0x{pc:08x}  fields={m4a_fields(iw)}",
+                              flush=True)
+                        # Full entity struct dump (gEntities slot 0x030018D0).
+                        print(f"    entity @0x{M4A_STRUCT:08x} dump:")
+                        for row in range(0, 0x40, 16):
+                            hexs = ' '.join(f'{iw[row+b]:02x}' for b in range(16))
+                            print(f"      +0x{row:02x}: {hexs}")
+                        anim = iw[0x12] | (iw[0x13] << 8)
+                        print(f"    KEY: +0x00(type/flags)=0x{iw[0]:02x} "
+                              f"+0x10(deleted?)=0x{iw[0x10]:02x} "
+                              f"+0x11=0x{iw[0x11]:02x} +0x12(animIdx)={anim} "
+                              f"+0x5c(framePtr)=0x{iw[0x5c]|(iw[0x5d]<<8)|(iw[0x5e]<<16)|(iw[0x5f]<<24):08x}",
                               flush=True)
                         print("    regs:", {k: hex(v) for k, v in regs.items()
                               if k.startswith('r') and isinstance(v, int)},
