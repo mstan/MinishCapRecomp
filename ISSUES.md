@@ -348,6 +348,220 @@ crash on the path out of the house through the right door.
   correctly (Image #2 "Good morning, Master Smith" renders fine
   afterwards). Host window stops pumping messages while blocked,
   which is what triggers Windows' unresponsive flag.
+- **▶ SESSION 4 (2026-05-28) — fresh-boot instruction-level diff; first real
+  recomp bug FOUND+FIXED (banked-SP reset), but it is NOT this hang. Read this
+  first; it reframes everything below.** Built a cycle-indexed per-instruction
+  fingerprint diff in gbarecomp: `g_runtime_cycles` clock (also fixes the
+  session-3 "cycles incomparable" red herring), `runtime_insn_fp` ring + codegen
+  emit in every instruction prologue, a bios_smoke mirror, and
+  `oracle/diff_cycle_trace.py` (free-run + architectural anchor → first divergent
+  instruction). Per direction, switched to **FRESH RUNS, no savestates** (state3
+  was masking/contaminating the comparison). First divergence on fresh boot:
+  **cyc 16, BIOS pc=0x90 `msr cpsr,#0x1f`** banked in SP=0 vs the canonical
+  `0x03007F00` — `reset_recomp_cpu` set only the active SVC SP and left the
+  User/IRQ banked SPs zeroed. **FIXED** in gbarecomp (seed banked SPs to the
+  canonical GBA reset values, matching mGBA/interp/hardware); after the fix
+  recomp==interp **bit-for-bit** through the whole comparable window. **But the
+  intro hang STILL reproduces (~f3656, `oracle/check_hang.py`)** — the banked-SP
+  bug was real but not the cause. Also CONFIRMED *with data* that the recomp's
+  TCP `step` (step_frame) is FUNCTION-GRANULAR and OVERSHOOTS frame boundaries on
+  long internal-`goto` loops (e.g. the BIOS VRAM-clear at 0x00000C04 = one
+  `runtime_dispatch` spanning ~7 frames) — so frame-granular memory diffs (incl.
+  the session-3 ones below) show PHANTOM divergence: the recomp is merely AHEAD,
+  not wrong. NEXT: catch the first REAL IWRAM divergence on fresh boot via the
+  fingerprint ring (the method that nailed the banked-SP bug) — no heavy
+  pause/step lockstep with the interp.
+- **▶ SESSION 3 (2026-05-28) — TWO leading hypotheses REFUTED; root narrowed
+  to a real ~1-game-frame lead whose cause is NOT IRQ-delivery phase. Read this
+  before re-chasing either dead lead.**
+  - **(1) "Miscompiled cmp/branch/flag/carry in the m4a chain" (the handoff's
+    step-1 lead) — REFUTED by a full static audit.** Hand-decoded every THUMB
+    halfword from the ROM for `MPlayMain`(0x080AF908), `tfunc_080AF912/_924/
+    _93C/_948/_950/_958/_960/_96A/_976`, `sub_080AFB74`, and `FadeOutBody`
+    (0x080B0874) entry, and compared against the generated C's per-instruction
+    decode comments: **every instruction matches** (cmp/beq/bge/bne targets,
+    the `bl 0x080AFB74` `+0x250`, the `subs r0,#1; strb r0,[r4,#0x10]` countdown
+    decrement — all faithful). The flag helpers in `runtime_arm.cpp` are correct
+    (`arm_set_nzcv_sub` C=`a>=b`, V=`((a^b)&(a^r))&msb`; `arm_set_nzcv_add`
+    C=`r<a`; `arm_cond_passes` every code incl. GE=`n==v`), and `codegen_tests`
+    is green. A systematic flag/branch miscompile would also have broken the
+    BIOS intro and every frame before f40. → No instruction-level bug in the
+    audited m4a path.
+  - **Structure identified (so the chain is no longer mysterious):** the
+    MPlayMain guard const `0x080AFB80 = 0x68736D53 = 'Smsh'` is the MP2K
+    `ID_NUMBER` re-entrancy magic — `MPlayMain` is the standard
+    re-entrancy-locked player (`if (ident!='Smsh') return; ident++; …;
+    ident='Smsh'`), and `sub_080AFB74` is `bx r3` — an *indirect* callback
+    dispatch `((fn)player[0x38])(player[0x3c])`, NOT a fixed recurse. So an
+    "extra sequencer pass" in re-entrancy-locked code is a timing/control-flow
+    symptom, not a bad compare.
+  - **(2) "Wake-from-HALT IRQ-delivery phase (recomp omits `kGbaIrqDelayCycles`
+    that the interpreter applies)" (the 2026-05-28d lead) — IMPLEMENTED and
+    REFUTED.** Found the concrete discrepancy: `bios_smoke` pumps +7 cycles
+    before vectoring out of HALT (`main.cpp:389`); the recomp's `runtime_tick`
+    (`runtime_bus_bridge.cpp`) took the IRQ immediately. **Fixed** (kept — it is
+    a correct standalone parity improvement): added shared
+    `gba::kIrqWakeDelayCycles` (gba_irq.h), refactored `runtime_tick` into
+    `tick_devices` + an IRQ-take that pumps the wake latency on the halt path,
+    and routed `bios_smoke` through the same constant. 12/12 ctest green,
+    `MinishCapRecomp.exe` relinked. **But `track_bytes.py --from 34 --to 55
+    --hold up` is byte-for-byte IDENTICAL to before the fix** (channel 0x03004470:
+    d=0 thru f39, d=−1 f40 → d=−6 f46, recomp SPUN f47). Byte-identical (not
+    "diverges differently") means the halt-wake path isn't even exercised at
+    this transition — during the busy scroll the game is NOT idle-halting, so
+    the VBlank IRQ is taken on the *non-halt* path, where BOTH engines already
+    deliver immediately (the interpreter adds the +7 ONLY on halt-wake). So IRQ
+    *phase* is not the cause.
+  - **What survives — ONE root, two faces.** The diff_anim "entity freed ~1
+    frame early" and the track_bytes "m4a channel decremented one extra time"
+    are the SAME phenomenon: the recomp is ~1 *game-logic* frame ahead through
+    the transition (game logic advances 1 step per VBlankIntrWait release = 1
+    per VBlank IRQ; being 1 ahead force-animates a not-yet-priority-paused /
+    freshly-freed slot → the 0x08004286 anim-walker spin). The d=−1 *onset* at
+    f40 has a phase-sampling component (recomp parks post-VBlank-handler / after
+    the tick, interp pre-handler / before), but the *growth* d→−6 is a real
+    extra decrement/frame = a real 1-frame lead, not pure artifact.
+  - **NARROWED next experiment (since IRQ phase is ruled out):** the lead must
+    come from the OTHER 2026-05-28d candidate — frame-boundary / cycle pacing /
+    VBlank-IRQ **count**. Decisive test: count VBlank-IRQ entries (BIOS vec 0x18
+    / game handler 0x08016BDC) recomp vs interp across f1..f47 — does the recomp
+    deliver an EXTRA or EARLY VBlank IRQ (spurious double-fire of
+    `events.vblank_started`, or an `IF` bit not cleared and re-firing), or does
+    it simply fit one more game-logic frame per PPU frame because per-instruction
+    cycle accounting lets it? Also re-audit whether `g_runtime_vblank_starts`
+    increments 1:1 with the interpreter's frame boundary near the transition
+    (residual counting skew would manufacture the lead). Tooling to add: a TCP
+    stat exposing `irq_entries`/`g_runtime_vblank_starts`, or count vec-0x18
+    dispatches in the always-on `g_trace` ring over the window (ring-respecting).
+  - **▶▶ BREAKTHROUGH (same session) — the recomp OVER-DELIVERS IRQs from f40;
+    this is the root layer, m4a + entity-free are downstream.** Wired an
+    authoritative IRQ-entry counter at the recomp's actual delivery site
+    (`g_runtime_irq_entries`, incremented in `runtime_irq`, runtime_arm.cpp;
+    the run-loop local never incremented because IRQs are taken in
+    `runtime_tick`, a different TU — the old `counters` reported 0 for the
+    recomp). New probe `oracle/diff_counters.py` compares per-frame
+    hardware-event-counter DELTAS (phase-robust) recomp vs interp from state3+Up:
+    ```
+    f 1..39  irq: R=2/I=2 every frame   ← IDENTICAL delivery
+    f40      irq: R=3 / I=1
+    f41      irq: R=4 / I=2
+    f42      irq: R=4 / I=2
+    f43      irq: R=3 / I=2
+    f44-45   irq: R=2 / I=2
+    f46      irq: R=13 / I=2            ← IRQ storm
+    f48      recomp SPUN
+    ```
+    Through f39 BOTH engines vector exactly 2 IRQs/frame; **starting exactly at
+    f40 the recomp vectors EXTRA IRQs, escalating to 13 in one frame just before
+    the spin.** One mechanism explains every prior symptom: each extra IRQ runs
+    the VBlank handler again → an extra m4a sequencer tick (the 0x03004470
+    countdown's extra decrement) AND advances game logic an extra step (entity
+    freed ~1 frame early) → eventually a storm → the 0x08004286 anim-walker spin.
+    The m4a "f40 divergence" and the "1-frame lead" are BOTH downstream of IRQ
+    over-delivery — NOT an m4a miscompile (audit clean) and NOT IRQ-delivery
+    *phase* (the kGbaIrqDelayCycles fix was inert because the bug is IRQ
+    *count/acknowledgment*). `cycles_elapsed` in the probe is a red herring: the
+    recomp's counter tallies only halt-path cycles (pump_idle) while the interp
+    pumps a fixed 280896-cycle quantum — incomparable by construction.
+  - **What changes at f40:** `FadeOutBody` first runs (a fade/song event), which
+    brings a new interrupt source live (MP2K programs Timer + sound-FIFO DMA;
+    candidates: a timer-overflow IRQ or a DMA IRQ). The recomp evidently fails to
+    *acknowledge/clear* that source's `IF` bit (or mishandles a handler that
+    re-enables IRQs for nesting — MP2K's sound IRQ handler does re-enable), so it
+    re-fires. The interpreter (`enter_irq` returns to the main step loop, which
+    re-checks `irq_pending` per instruction with `IF` already write-1-cleared)
+    does not. The recomp vectors `runtime_irq → runtime_dispatch(0x18)` which
+    runs the WHOLE handler chain *recursively* to completion before returning;
+    the interaction of that recursive delivery with `IF` acknowledgment / a
+    handler that re-enables IRQs is the prime suspect.
+  - **NEXT (pin the source):** identify WHICH `IF` bit runs away — break the
+    recomp's IRQ count down by source (log `IF`/`IE` at each `runtime_irq`, or
+    dump RUNTIME_TRACE_IRQ events from the always-on ring across f40–f46), then
+    compare recomp vs interp `IF` acknowledgment for that source. Fix is in the
+    runtime IRQ-delivery / `IF`-clear path (or the IO write-1-to-clear for `IF`),
+    NOT in generated code. Validate: `diff_counters.py` must show R=I IRQ deltas
+    past f40 and `track_bytes` must stay d=0 / not spin.
+  - **▶▶▶ SOURCE PINNED — the storm is nested VCount re-delivery.** Wired
+    `runtime_irq` to record the active source `(IE & IF)` in the trace addr
+    field; raised the TCP `runtime_trace` cap 512→4096; `oracle/irq_sources.py`
+    histograms IRQ events from the ring. `oracle/diff_io.py` confirms
+    **IE = 0x2005 (VBlank+VCount+GamePak) is IDENTICAL on both engines all the
+    way through** — no new source enabled at f40; DISPSTAT enables VCount IRQ at
+    LYC=0x50 (scanline 80). Baseline f30/f38/f39 (game HALTING): exactly
+    1 VBlank + 1 VCount/frame, both interrupting the BIOS halt-wait at
+    `ret=0x348` (System mode) — clean, fully serialized (handler completes,
+    game re-halts, next IRQ from the halt loop). Storm f40+ (game BUSY through
+    the transition, halt_steps→0): captured IRQ events are **VCount, nested,
+    interrupting game code in System mode (`cpsr&0x1f==0x1f`)**.
+  - **MECHANISM (why only transitions, why only busy frames):** while halting
+    (f1–39) IRQs are serialized — each handler finishes and the game re-halts
+    before the next IRQ, so no nesting. At a transition the game does too much
+    work to idle-wait, so it runs continuously (busy); the long VBlank/m4a
+    handler switches to System mode and RE-ENABLES IRQs (MP2K does this for
+    sound), so **VCount nests inside it**. The recomp delivers IRQs
+    *recursively* — `runtime_irq → runtime_dispatch(0x18)` runs the ENTIRE
+    handler synchronously on the host C stack, re-checking `irq_pending` after
+    every `runtime_tick` — and **storms on the nested VCount** (3→4→…→13/frame
+    → spin). The interpreter delivers *flat*: `enter_irq` only sets up the entry
+    and returns to the main step loop; nesting happens via guest CPSR/SPSR
+    banking + the IRQ stack exactly like hardware, so it does NOT storm. This is
+    the general transition-hang root (explains MC-HP-002 across every transition,
+    and MC-HP-003 garble as its downstream presentation artifact).
+  - **FIX DIRECTION (next, core runtime — NOT generated code):** make the
+    recomp's nested-IRQ delivery match hardware/the interpreter. Candidates, to
+    be chosen after checking mGBA's IRQ model: (a) don't re-vector the same
+    unacked source — gate re-delivery so a pending bit isn't taken again until
+    the handler acks it / the source re-asserts (proper edge vs the recursive
+    per-tick re-check); (b) restructure delivery so a nested IRQ doesn't grow the
+    host C stack unbounded (flat trampoline / bounded nest depth). MUST re-verify
+    the BIOS intro gate after (the change touches the IRQ-timing model). Validate
+    with `diff_counters.py` (R=I IRQ deltas past f40), `track_bytes` (no extra
+    decrement, no spin), and a full transition play-through.
+  - **▶▶▶▶ CORRECTION (same session) — the "recursive IRQ storm / nesting"
+    framing above is WRONG; IRQ over-delivery is a SYMPTOM of over-long game
+    code, not the cause. Read this; it supersedes the SOURCE-PINNED/MECHANISM/
+    FIX-DIRECTION bullets' nesting claim.** Added live IRQ nesting-depth tracking
+    (`g_irq_nest_depth` ++/-- around the handler in `runtime_irq`, depth in the
+    trace `aux`) and an env gate `GBARECOMP_ABORT_ON_IRQ_DEPTH=N` (dumps the ring
+    + aborts when depth reaches N). With the gate at **2 AND 3, it never fired
+    through f47** — IRQ nesting depth stays at **1** (no IRQ is ever taken while
+    a handler runs). So there is NO recursive nesting and NO re-entrant storm;
+    the recursive-delivery hypothesis is refuted, and the IRQ-delivery-model
+    "fix direction" above is moot.
+  - **What the 13 IRQs/frame ACTUALLY are — a step-semantics artifact of
+    over-long game code.** The recomp's TCP `step` (step_frame) is
+    FUNCTION-GRANULAR: `step_once` runs one whole `runtime_dispatch` and only
+    then checks `g_runtime_vblank_starts`. So if a single dispatched game
+    function over-iterates for ~6–7 PPU-frames, the PPU advances ~6–7 frames
+    *inside that one step_once* and delivers ~13 IRQs (each depth-1, flat) before
+    step_once returns. The interpreter's `step` is CYCLE-CAPPED (pumps a fixed
+    280896-cycle quantum and can stop mid-function), so it never overshoots and
+    reports ~2 IRQ/frame. The growth f40(3)→f46(13) is a game function iterating
+    progressively LONGER each frame — the runaway building toward the f48
+    infinite loop (the anim/m4a walker on diverged data). The IRQ over-delivery,
+    the m4a-countdown "extra decrement", and the "1-frame lead" are ALL downstream
+    readouts of this over-iteration + the function-granular-vs-cycle-capped step
+    mismatch — NOT independent bugs.
+  - **CORRECTED ROOT (still open):** a game function over-iterates on the recomp
+    starting ~f40 and grows to an infinite loop by ~f48 (interp never reaches
+    that state — diff_anim: recomp entity animIdx→0 at f39, interp stays 323), so
+    the recomp genuinely diverges in DATA/control-flow before the walker. NOT an
+    m4a-chain miscompile (audited clean), NOT IRQ phase, NOT IRQ nesting. The
+    frame-granularity oracle diffs (track_bytes/diff_iwram/diff_counters) are
+    CONFOUNDED once functions run long, by recomp(function-granular) vs
+    interp(cycle-capped) `step`.
+  - **GENUINE NEXT STEP:** add a recomp CYCLE-CAPPED step mode (yield via the
+    existing per-instruction `runtime_should_yield` when a cycle budget is spent
+    — feasible since break_pc already yields mid-function) so the recomp can be
+    compared to the interpreter at IDENTICAL cycle/event points; then event-align
+    both at the f40 m4a/VBlank handler entry (a hardware event, identical state)
+    and find the FIRST real register/memory divergence (the function whose loop
+    over-iterates / the data feeding it). That first divergence — not the IRQ
+    counts — is the root. Re-audit THAT function vs ROM.
+  - **Tooling landed this session (kept):** `gba::kIrqWakeDelayCycles` shared
+    constant + `runtime_tick`/`tick_devices` refactor (correct parity, inert on
+    this bug); `g_runtime_irq_entries` wired through TCP `counters`;
+    `oracle/diff_counters.py`; the m4a static-audit notes above.
 - **★ CORRECTED AGAIN 2026-05-28 (session 2) — supersedes BOTH the
   "1-frame-ahead / entity-animation" and the older "M4A" writeups below.
   The real earliest divergence is in the M4A SOUND engine at frame 40; the
