@@ -293,6 +293,26 @@ crash on the path out of the house through the right door.
   `state_postcut` (or a fresh play) and confirm no abort. Then close.
 
 ### MC-HP-006: Dispatch miss at 0x08062922 on a later screen transition
+- **STATUS: RESOLVED 2026-06-14 (root-caused + tool fix).** The
+  `0x08062834` (Kid_Head) dispatcher IS a bounded `MOVpc` jump table at
+  `0x08062870` (stride 4, count 9, abs32; 3 distinct targets
+  `0x08062894`/`0x080628d8`/`0x08062922`). The auto-detector missed it
+  because the switch index is staged through a scratch reg
+  (`lsl r0,r4,#2; mov ip,r0; ... add r0,ip`) and the `CMP r4,#8` guard
+  comes *after* the scale, plus the fold is a 2-operand `add r0,r0,ip`
+  (rd==rn). Fixed three index-tracker gaps in
+  `gbarecomp/src/recompile/function_finder.cpp` (general, not a per-site
+  `[[jump_table]]` hint): (1) propagate `reg_scaled`/`reg_table` through a
+  plain `MOV Rd,Rm`; (2) source-register provenance so a late CMP bound
+  attaches; (3) snapshot the base const before the tracker clears it on
+  `rd==rn`. Now `auto_jt 0x08062870 count=9 ... MOVpc bounded`. Game-wide
+  delta: MC +1 table / +19 entries (all inside Kid_Head), FireRed 0
+  change, 0 rejected tables, nothing removed; all ctests green. Regen'd
+  `generated/` (44424→44584) + relinked; running from the town savestate
+  (`state1`) is now `FULLY_STATIC` (0 misses, 0 heals) where the prior
+  build healed 9 Kid_Head fragments — and the static run is step/cycle/
+  frame byte-identical to the healed run. The self-heal first surfaced
+  this gap live (see [[project_self_healing_recomp]]).
 - **Observed:** 2026-05-26c. After the MC-HP-001 + house-exit fixes,
   the user played well past the opening (frame ~38,550, new save
   states made) and hit `runtime_arm: dispatch miss for pc=0x08062922`
@@ -854,6 +874,33 @@ crash on the path out of the house through the right door.
   or revert to keep the tree clean while the real sound-engine fix is
   pursued. The sampler is worth keeping as gated tooling.
 - **Priority:** high — UX-breaking on every music/sound transition.
+- **▶ SESSION (2026-06-11) — auto-captured on `main`; PARKED.** Built a fresh
+  always-on hang watchdog on `main` (`runtime_bus_bridge.cpp`
+  `runtime_should_yield`: signal = guest has not HALTed/`VBlankIntrWait`ed for
+  N seconds — the spin keeps ticking the PPU so `vblank_starts` advances, which
+  is why a frame-based watchdog never fired; `GBARECOMP_HANG_WATCHDOG=0` /
+  `GBARECOMP_HANG_SECONDS` to tune). On trip it dumps `mp2k_dump_live` +
+  pc/cycles to `./hang_dump.log` once and keeps running (observation, not a
+  fix). Reproduced the freeze in a normal windowed run; capture:
+  `pc=0x0800428A` (inside the known `0x08004286→92` loop), `vblank_starts=1514`,
+  `cycles=40951897`.
+  - **NEW EVIDENCE — the mixer is innocent.** The captured `m4a_dump` shows the
+    voice mixer fully HEALTHY at the freeze: `SoundInfo@0x03000A50`, every
+    `SoundChannel` `any_corrupt=false`, wave pointers valid in ROM `0x08A4xxxx`,
+    good headers. So the corrupt `R1=0x0046xxxx` the loop walks is **not** a
+    SoundChannel/wave pointer — consistent with the worktree regs showing R1's
+    base loaded from the *other* sound struct `@0x03001738` (the sequencer/track
+    path), NOT `SoundInfo`. The bug is in whatever computes that base, upstream
+    of the voice renderer.
+  - **GAP for next time:** the `main` watchdog dumps PC + mixer channels but not
+    `R0–R15`; add register capture (+ dump the `0x03001738` struct) so the next
+    repro names R1's value and the source field directly, then run the
+    disasm(`0x08004286`)→ first-divergent-frame diff to the recompiler bug.
+  - **Decision: NOT proceeding now.** Parked with the freeze self-documenting
+    (`hang_dump.log` on any future repro). Tooling that landed this round — the
+    MP2K detect/dump (`gba_m4a`), the always-on hang watchdog, and the audio
+    shadow/color enhancements — is committed-worthy; the root-cause fix is
+    deferred.
 
 ### MC-HP-003: Severe screen garbling during Zelda's room-transition
 - **Observed:** 2026-05-25. During the cutscene transition where
