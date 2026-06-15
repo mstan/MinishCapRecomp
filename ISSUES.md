@@ -358,6 +358,24 @@ crash on the path out of the house through the right door.
   MC-HP-000's open computed/offset-base idiom gap.
 
 ### MC-HP-002: Long unresponsive hangs at cutscene boundaries
+- **★ RESOLVED 2026-06-15 — user-confirmed on the real repro.** Root cause:
+  the recomp returned **0** for protected-BIOS / unmapped reads where real
+  hardware returns the recently pre-fetched opcode (**open-bus**). The game
+  legitimately runs null-animation entities (`animId=0` → ROM anim-group
+  `table[0]=0`, confirmed identical in mGBA) whose animation code dereferences
+  the NULL group and reads the BIOS region. On hardware that returns
+  `0xE3A02004` (an ARM opcode, bit7 set) so the frame-list walker
+  `UpdateAnimationVariableFrames` terminates; with `0` the frame pointer
+  degenerated to `4` and the walker marched memory forever — the permanent
+  "Not Responding" at every scene transition. Fixed in **gbarecomp** by a
+  faithful open-bus model in `GbaBus` (commit `4096aa2`, "fix(gba): model
+  BIOS/unmapped open-bus prefetch"); pinned via a new threaded-TCP debugger
+  that introspects a hung core live, validated against the gbaref/mGBA oracle
+  (`obj+0x5c` settles to `0xE3A02024`, byte-identical to mGBA). FULLY_STATIC,
+  11/11 ctests, BIOS-intro boot pixel-identical. The prior sessions had the
+  open-bus root cause right but the wrong value/scope (executing opcode +
+  BIOS-region only → the hang merely relocated). The history below is kept for
+  the record.
 - **Observed:** 2026-05-25. Two distinct multi-second hangs during
   the intro path. (1) After the stained-glass cards + text
   sequence, a long black screen during which Windows flags the
