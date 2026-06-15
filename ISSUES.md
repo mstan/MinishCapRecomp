@@ -921,6 +921,22 @@ crash on the path out of the house through the right door.
     deferred.
 
 ### MC-HP-003: Severe screen garbling during Zelda's room-transition
+- **★ RESOLVED 2026-06-15 — user-confirmed (save F4).** The transition is a
+  circular IRIS wipe: a WIN0 window converges to a circle around the door,
+  blanking everything outside to the backdrop while the next room's VRAM/palette
+  reload, then opens on the new room. The recomp's PPU was missing two pieces,
+  both implemented in **gbarecomp**:
+  1. **Coordinate windows WIN0/WIN1 + BLDY brightness fade** (`gba_ppu.cpp`,
+     commit `e6b12b0`). The PPU had only the OBJ window + alpha blend, so it
+     ignored WIN0 and rendered the full screen → the VRAM reload showed as the
+     garble. This eliminated the garble (the fade now renders).
+  2. **HBlank/VBlank-timed DMA + repeat** (`gba_io.cpp`, commit `d93d5b1`). DMA
+     was immediate-only; the per-scanline WIN0H circle table is delivered by an
+     HBlank DMA, so without it the iris rendered as a horizontal-shrinking
+     rectangle with an edge "jut". With HBlank DMA the iris is a smooth circle.
+  Decoupled from MC-HP-002 (the hang, fixed separately): once the hang was gone
+  the garble was brief rather than held, then these two PPU/DMA fixes removed it.
+  11/11 ctests; BIOS intro unaffected. The history below is kept for the record.
 - **Observed:** 2026-05-25. During the cutscene transition where
   Zelda walks off-screen into the next room, the display garbles
   badly (Image #1: torn / scrambled tiles, palette bleed, OAM
