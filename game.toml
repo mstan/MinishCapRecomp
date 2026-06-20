@@ -55,6 +55,27 @@ type = "eeprom"            # one of: sram | flash512 | flash1m | eeprom
 debug_port    = 19842
 window_title  = "MinishCapRecomp"
 
+# ── Video ───────────────────────────────────────────────────────────
+# Present-time screen-color simulation (faithful display reproduction;
+# does NOT touch emulation or the verify path — raw BGR555 stays the
+# oracle). One of: raw | unlit | frontlit | backlit | classic.
+#   raw      = no simulation (5→8 bit replication; the default if unset)
+#   frontlit = original reflective panel, lit — the authored "as designed" look
+#   backlit  = late near-sRGB panel (clean blacks)
+#   classic  = community-canonical gamma-4.0 model
+# Overridable at launch with the GBARECOMP_SCREEN env var.
+[video]
+screen = "frontlit"
+
+# ── Audio ───────────────────────────────────────────────────────────
+# MP2K (m4a) verified-enhancement shadow mixer: re-renders the driver's
+# voices in float (free of the hardware's 8-bit/low-rate mix), policed
+# every sample against the canon hardware stream and reverting loudly on
+# divergence — QoL on top of correctness, never the verify oracle. Off
+# by default; overridable at launch with GBARECOMP_AUDIO_SHADOW ("0" off).
+[audio]
+shadow = true
+
 # ── Function table (dispatch hints) ─────────────────────────────────
 #
 # Discovered function addresses go here, grouped by ARM/THUMB mode.
