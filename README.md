@@ -1,66 +1,127 @@
-# MinishCapRecomp
+# MinishCapRecomp — The Legend of Zelda: The Minish Cap, Recompiled
 
-Static recompilation of *The Legend of Zelda: The Minish Cap* (GBA),
-built on top of [`gbarecomp`](../gbarecomp).
+Static recompilation of **The Legend of Zelda: The Minish Cap** (Game Boy Advance)
+to native PC, built on the [`gbarecomp`](https://github.com/mstan/gbarecomp)
+framework. Minish Cap is `gbarecomp`'s original target and the most mature of the
+GBA recomps here.
 
-This is a **recomp**, not a port and not a decomp. We take the
-original ROM's ARM/THUMB machine code and lift it to native C/C++
-that runs against a principled GBA hardware/runtime model.
-
-The decomp at [`zeldaret/tmc`](https://github.com/zeldaret/tmc) is a
-valuable reference for symbols, function boundaries, ROM layout, and
-asset labels. It is **not** an execution oracle and we do not lift
-its PC-port runtime. See `../gbarecomp/docs/GBA_REFERENCE_NOTES.md`
-for what we may and may not borrow.
-
----
-
-## What this repo contains
-
-| Path                | Purpose                                                       |
-|---------------------|---------------------------------------------------------------|
-| `game.toml`         | ROM identity, entry point, save chip, recompiler config.      |
-| `baserom.md`        | Documented ROM hashes and where the user puts their ROM.      |
-| `config/`           | Per-region configs (USA/EUR/JPN) layered on `game.toml`.      |
-| `symbols/`          | Imported symbol map + function boundaries (TSV).              |
-| `generated/`        | Output of `gba_recompile`. **Never** hand-edited.             |
-| `src/main.cpp`      | Game runner entry point (links against `gbarecomp_runtime`).  |
-| `src/game_config.*` | Game-specific config wiring.                                  |
-| `tools/`            | Symbol importer + ROM hash verifier.                          |
-| `docs/`             | Project notes, borrowed-references map, validation plan.      |
+> ### Status — playable into gameplay (v0.0.1), and self-improving
+>
+> This is a **static-recompilation base + runner**, not a finished port. It
+> **boots through the BIOS intro to the title screen and into gameplay** —
+> overworld, dialogue, and save states round-trip. It is the most-complete GBA
+> title in this collection, but still **early**: not every code path is statically
+> recompiled, and content is not exhaustively tested.
+>
+> **It gets better the more you play.** Any code path the static recompiler hasn't
+> covered runs through a built-in **interpreter the first time it's hit**, then is
+> **JIT-compiled to native** (in-process, no toolchain needed) and **remembered on
+> disk** — so the next launch runs it natively from the start. Interpreted once,
+> native ever after; coverage grows toward fully-native as the game is played. See
+> [How it self-improves](#how-it-self-improves).
 
 ---
 
-## Build
+## What "static recompilation" means here
 
-You need a built `gbarecomp` at `../gbarecomp`. Then:
+The ROM's **ARM7TDMI machine code is statically translated to native C** — every
+function the game runs becomes a real generated C function. Unlike most recomp
+projects, **the GBA BIOS is recompiled and executed too** (not HLE'd or stubbed),
+so the boot sequence and interrupt/SWI handlers run as real recompiled code. The
+rest of the console — the PPU (graphics), APU + M4A sound engine, DMA, timers, the
+cartridge EEPROM save chip, and hardware I/O — is modeled by the `gbarecomp`
+runtime.
+
+Only **symbol metadata** (function names, addresses, sizes) from the
+[`zeldaret/tmc`](https://github.com/zeldaret/tmc) decompilation enters this repo —
+never its C source, PC-port runner, or toolchain. **The ROM is never
+redistributed**; you supply your own legally-dumped copy.
+
+## ROM
+
+| Target            | Game                                  | ROM (USA) | SHA-1                                      | Debug port |
+|-------------------|---------------------------------------|-----------|-------------------------------------------|------------|
+| `MinishCapRecomp` | The Legend of Zelda: The Minish Cap   | USA       | `b4bd50e4131b027c334547b4524e2dbbd4227130` | 19842      |
+
+The runtime **refuses to launch on an unrecognized ROM** — the SHA-1 must match.
+Save chip: EEPROM. (Other regions can be added by checksum in `config/<region>.toml`.)
+
+## Quick start
+
+1. Build from source (below) — prebuilt binaries are not yet published.
+2. Run `MinishCapRecomp`.
+3. Supply your own **legally-obtained** Minish Cap (USA) ROM when prompted. The
+   path is cached next to the exe for future launches.
+4. Play. Early on you may briefly see the interpreter warm up new code paths; once
+   warmed (and cached), they run native.
+
+## Controls
+
+| GBA button | Keyboard      |
+|------------|---------------|
+| D-Pad      | Arrow keys    |
+| A          | Z             |
+| B          | X             |
+| L / R      | A / S         |
+| Start      | Enter         |
+| Select     | Backspace     |
+
+Save states: **Shift+F1–F9** save to a slot, **F1–F9** load it.
+
+## How it self-improves
+
+`gbarecomp`'s coverage is honest: a path that wasn't statically recompiled is
+**bridged through the interpreter** the first time, *loudly*, then healed:
+
+- **First hit:** the interpreter runs the missed function (correct, just not
+  native) and the runtime records it.
+- **Heal:** the function is **JIT-compiled to native in-process** via a
+  toolchain-less backend (sljit) — no compiler required on your machine.
+- **Persist:** the healed path is written to a per-ROM cache
+  (`recomp_cache/<rom-sha1>/`), so **the next launch re-JITs it up front** and it
+  runs native from the start.
+
+The result is a game that converges toward fully-native execution the more it's
+played, and **stays** improved across launches. A handful of instruction patterns
+the JIT can't lower yet stay on the interpreter (precision over recall); those are
+emitter gaps that close over time. Self-improvement is on by default; set
+`GBARECOMP_SELFHEAL_RECOMPILE=0` for a pure-interpreter run.
+
+## Building from source
+
+**Prerequisites (Windows):** [MSYS2](https://www.msys2.org/) with the mingw64
+toolchain (`gcc`/`g++`), CMake 3.16+, Ninja, and SDL2 (mingw64 package). Builds
+are invoked from PowerShell with the mingw64 toolchain on `PATH`.
+
+**1. Clone this repo next to `gbarecomp`** (it builds against the sibling engine
+checkout on `main`):
 
 ```
-cmake -B build -S . -DGBARECOMP_ROOT=../gbarecomp
-cmake --build build
+git clone https://github.com/mstan/gbarecomp.git
+git clone https://github.com/mstan/MinishCapRecomp.git
+cd MinishCapRecomp
 ```
 
-This produces:
-- `verify_rom_hash` — refuses to launch the game with an unknown ROM.
-- `import_tmc_symbols` — pulls symbol + boundary data from a local
-  checkout of `zeldaret/tmc` into `symbols/`. The decomp source
-  itself never enters this repo.
-- `MinishCapRecomp` — the game binary, linked against the recompiled
-  generated C and `gbarecomp_runtime`.
+**2. Supply your ROM** at `roms/minishcap_usa.gba` (SHA-1 above). ROMs are
+gitignored and never committed.
 
----
+**3. Recompile + build.** The committed `symbols/` map is the importer output, so
+you can regenerate the C and build directly:
 
-## Status
+```
+# from PowerShell, mingw64 on PATH
+gba_recompile --rom roms/minishcap_usa.gba --config game.toml --out generated
+cmake -S . -B build -G Ninja -DGBARECOMP_ROOT=../gbarecomp
+cmake --build build --target MinishCapRecomp
+```
 
-Phase 0. ROM hash is not yet verified, no functions are yet
-recompiled, and no boot path is yet validated. See
-`../gbarecomp/docs/ROADMAP.md` Phase 5 for the milestone list. Do
-**not** claim boot progress before each milestone is measured.
+(`gba_recompile` is built from the `gbarecomp` checkout; see that repo's README.)
+The recompiled translation unit is large — expect a multi-minute compile.
 
----
+## Legal
 
-## Provide your own ROM
-
-We don't distribute the ROM. The build expects a local path the user
-provides in `baserom.md`. The runner verifies the SHA-1 before doing
-anything and refuses to start if the hash isn't recognized.
+This project contains **no copyrighted ROM data, no Nintendo BIOS, and no decomp
+source** — only original recompiler/runtime code and symbol metadata. **You must
+supply your own legally-dumped ROM** (and BIOS, where the runtime requires one).
+The Legend of Zelda and The Minish Cap are trademarks of Nintendo; this project is
+an unaffiliated, non-commercial preservation and research effort.
