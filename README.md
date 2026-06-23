@@ -48,7 +48,8 @@ Save chip: EEPROM. (Other regions can be added by checksum in `config/<region>.t
 
 ## Quick start
 
-1. Build from source (below) — prebuilt binaries are not yet published.
+1. Download the latest `MinishCapRecomp-windows-x64` zip from
+   [Releases](../../releases) and extract it (or build from source — see below).
 2. Run `MinishCapRecomp`.
 3. Supply your own **legally-obtained** Minish Cap (USA) ROM when prompted. The
    path is cached next to the exe for future launches.
