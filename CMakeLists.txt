@@ -5,10 +5,11 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Path to the platform core. Override with -DGBARECOMP_ROOT=... if you
-# keep the layout differently.
-set(GBARECOMP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../gbarecomp"
-    CACHE PATH "Path to gbarecomp platform core")
+# Path to the platform core, consumed as a git submodule (junctioned locally
+# to the shared checkout). Override with -DGBARECOMP_ROOT=... for a different
+# layout (e.g. a sibling ../gbarecomp checkout).
+set(GBARECOMP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/gbarecomp"
+    CACHE PATH "Path to gbarecomp platform core (git submodule)")
 
 if(NOT EXISTS "${GBARECOMP_ROOT}/CMakeLists.txt")
     message(FATAL_ERROR

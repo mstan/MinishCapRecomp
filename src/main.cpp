@@ -69,6 +69,7 @@ int main(int argc, char** argv) {
     // asset picker treats it as informational next to the SHA-1 gate.
     opts.builtin_rom_crc32  = 0xABCEBBB1u;
     opts.launcher_region    = "USA";
+    opts.launcher_game_config = "game.toml";   // prefill ROM/BIOS from [rom]/[bios]
     // Save: game.toml [save] has no explicit path — the runtime derives
     // <rom>.sav, and the launcher seam shows the same derivation.
 
