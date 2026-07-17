@@ -8,6 +8,7 @@ id = "minishcap_usa"
 load_address = 0x08000000
 size = 0x01000000
 entry_pc = 0x08000000
+codegen_shards = 16
 
 [identity]
 sha1 = "b4bd50e4131b027c334547b4524e2dbbd4227130"
@@ -1146,6 +1147,10 @@ addr = 0x080040A8
 mode = "thumb"
 name = "CheckOnScreen"
 note = "F:/Projects/gbarecomp/MinishCapRecomp/third_party/tmc/asm/src/code_08003FC4.s"
+
+[[thumb_alu_immediate_override]]
+addr = 0x080040B2
+note = "Adaptive view: widen CheckOnScreen's left visibility guard"
 
 [[extra_func]]
 addr = 0x080040D8
@@ -25230,6 +25235,14 @@ addr = 0x080562CC
 mode = "thumb"
 name = "CheckRegionOnScreen"
 note = "build/USA/src/main.o"
+
+[[thumb_alu_immediate_override]]
+addr = 0x080562DA
+note = "Adaptive view: move CheckRegionOnScreen's right viewport edge"
+
+[[thumb_alu_immediate_override]]
+addr = 0x080562E8
+note = "Adaptive view: widen CheckRegionOnScreen's comparison span"
 
 [[extra_func]]
 addr = 0x08056300
@@ -51978,4 +51991,3 @@ addr = 0x080B299C
 mode = "arm"
 name = "sub_080B299C"
 note = "F:/Projects/gbarecomp/MinishCapRecomp/third_party/tmc/asm/src/intr.s"
-

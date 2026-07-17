@@ -15,6 +15,77 @@ crash on the path out of the house through the right door.
 
 ---
 
+## Adaptive extended-view audit (2026-07-17)
+
+### MC-WS-001: Wide compositor misses the realtime budget at large view widths — CANDIDATE MEETS BUDGET; LIVE VERIFY
+- **Observed:** The adaptive view is materially slower as the rendered width grows.
+  Compiler contention made the first live test worse, but a quieter-machine retest
+  still shows visible slowdown at the ultrawide/fullscreen size.
+- **Measured:** On the same outdoor save state, the first optimization pass reduced
+  renderer time from about 10.77 to 9.38 ms/frame at 373 pixels and from 13.79 to
+  11.21 ms/frame at 480 pixels. End-to-end time improved by about 5% and 14%,
+  respectively. Output hashes remained pixel-identical at 240, 373, and 480 pixels.
+- **Current finding:** This workload is integer tile/window/sprite composition, so
+  compiler "fast math" is unlikely to help. The useful HLE boundary is the renderer:
+  batch or cache repeated tile/attribute work, specialize native versus extension
+  spans, and avoid per-pixel guest callbacks and bus reads.
+- **Critical build finding:** The initial live `perf3` PPU object was an unoptimized
+  development build. Rebuilding the same candidate as Release reduced 480-wide
+  renderer cost from roughly 11.2 to 6.1 ms/frame. Production/release performance
+  must not be judged from an empty-`CMAKE_BUILD_TYPE` Ninja build.
+- **Latest candidate:** Resolving each output column's window mask once per scanline,
+  rather than repeating WIN0/WIN1/OBJ-window tests in every compositor stage, reduced
+  a paired Release run from about 6.06 to 5.26 ms of renderer time per 480-wide frame.
+  Total headless time fell from about 14.4 to 13.6 ms/frame, below the 16.74 ms GBA
+  frame period. Native-240 and wide-480 PNG hashes are unchanged.
+- **Next:** Confirm delivered 59.7 FPS in the live synchronized build and repeat on a
+  clean full-Release package. Profile BG/OBJ stages further only if gameplay scenes
+  with heavier sprites or effects still miss budget.
+
+### MC-WS-002: Camera motion exposes lines and waviness in the extended margins — IN PROGRESS
+- **Observed:** At wide sizes, moving through the overworld can reveal obstructing
+  lines in the extended area. At narrower sizes the same defect appears as subtle
+  waviness while walking.
+- **Finding:** The room tile and in-tile pixel phases agree: Minish writes the room
+  camera modulo 16 (plus shake) to the BG offsets, while the provider uses the same
+  camera and shake values. Neither adaptive-only synchronized presentation nor a live
+  linear-filtered presentation cleared the artifact. That rules out both ordinary
+  unsynchronized presentation and fractional nearest-neighbor pixel crawl as the sole
+  cause.
+- **Next:** Capture consecutive raw compositor frames from the outdoor state while
+  walking and inspect fixed native-boundary/tile-boundary rows and columns. If the raw
+  frames are clean, inspect delivered-frame pacing; if they contain the line, isolate
+  the first BG/OBJ layer that introduces it. Keep fixed-width/MMZ presentation unchanged.
+
+### MC-WS-003: Ground cloud/shadow effect stops at the native viewport — RESOLVED 2026-07-17
+- **Observed:** The moving cloud-like shading on the ground is present only across
+  the original 240-pixel view. Newly revealed world geometry outside that range does
+  not receive the effect.
+- **Cause:** Hyrule Field's `CloudOverlayManager` uses an intentionally repeating,
+  diagonally scrolling BG3 texture. The extended renderer's fail-closed policy
+  suppressed every unsupported ring-buffer layer in margins, including this one
+  authored repeat.
+- **Fix:** The provider protocol can now explicitly retain a wrapped tile entry. The
+  Minish adapter requests it only for the screen-block-30, char-block-1 alpha-blended
+  BG3 configuration used by the cloud manager. Other BG3 uses, menus, native 3:2,
+  and MMZ retain their existing policy. On a captured Hyrule Field frame, the
+  authentic 240-pixel center remained byte-identical while only both margins gained
+  cloud shading. Live `perf8` verification confirmed the clouds now continue cleanly.
+
+### MC-WS-004: Objects disappear while still visible in adaptive margins — CANDIDATE
+- **Observed:** At a wide view, the green exterior door on the Hyrule Field house
+  disappears when Link moves far enough away even though the house remains visible.
+- **Cause:** This is guest-side culling, not an OAM/compositor omission.
+  `HouseDoorExterior` creates and deletes its door through `CheckRegionOnScreen`, whose
+  horizontal bounds hardcode the native 240-pixel viewport. `CheckOnScreen` has the
+  same native-width assumption for other entities.
+- **Candidate:** Exact reviewed immediate/literal chokepoints widen those two helpers
+  by the active left/right margins only while adaptive view is expanded. Their native
+  constants, vertical culling, fixed-width mode, and MMZ behavior remain unchanged.
+- **Next:** Load the outdoor state at maximum width and verify the door remains drawn
+  while traversing both sides of the adaptive viewport; then audit the less common
+  `CheckRectOnScreen` manager helper for symmetric-margin coverage.
+
 ## High priority
 
 ### MC-HP-000: Function-finder relies on manual hints; cheap discovery heuristics not implemented

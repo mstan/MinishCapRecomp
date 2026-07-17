@@ -5,8 +5,10 @@
 
 #include "gba_bus.h"
 #include "gba_ppu.h"
+#include "runtime_arm.h"
 #include "runtime_bus_bridge.h"
 
+extern "C" unsigned g_ws_active;
 extern "C" unsigned g_ws_extra_left;
 extern "C" unsigned g_ws_extra_right;
 
@@ -39,10 +41,51 @@ struct ScanlineState {
     int room_height = 0;
     std::uint8_t hud_hide_flags = 0;
     bool message_active = false;
+    bool cloud_overlay = false;
 };
 
 ScanlineState g_state;
 gba::GbaBus* g_bus = nullptr;
+
+// Horizontal visibility helpers in the original game use the native 240px
+// viewport as an immediate/literal. These exact sites retain their original
+// constants unless the adaptive view has actually opened margins.
+extern "C" int minish_view_alu_immediate(std::uint32_t pc,
+                                           std::uint32_t original,
+                                           std::uint32_t* out_value) {
+    if (!out_value || !g_ws_active) return 0;
+
+    switch (pc) {
+        case 0x080040B2u:  // CheckOnScreen: preserve its 63px left guard.
+            if (original != 0x3Fu) return 0;
+            *out_value = original + g_ws_extra_left;
+            return 1;
+        case 0x080562DAu:  // CheckRegionOnScreen: right viewport edge.
+            if (original != 0xF0u) return 0;
+            *out_value = original + g_ws_extra_right;
+            return 1;
+        case 0x080562E8u:  // CheckRegionOnScreen: total comparison span.
+            if (original != 0xF0u) return 0;
+            *out_value = original + g_ws_extra_left + g_ws_extra_right;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+extern "C" int minish_view_rom_read32(std::uint32_t address,
+                                        std::uint32_t original,
+                                        std::uint32_t* out_value) {
+    if (!out_value || !g_ws_active || address != 0x0800436Cu ||
+        original != 0x0000016Eu) {
+        return 0;
+    }
+
+    // CheckOnScreen's upper bound includes the original 63px guard on both
+    // sides. Widen only its horizontal span; vertical culling is unchanged.
+    *out_value = original + g_ws_extra_left + g_ws_extra_right;
+    return 1;
+}
 
 gba::GbaBus* active_game_bus() {
     if (!g_bus) g_bus = gbarecomp::active_bus();
@@ -76,6 +119,16 @@ int bg_for_settings(std::uint32_t settings) {
     return -1;
 }
 
+bool is_hyrule_cloud_overlay(gba::GbaBus* bus) {
+    // CloudOverlayManager configures BG3 as a screen-block-30, char-block-1
+    // alpha-blended texture and scrolls it diagonally. Its 256px map is meant
+    // to tile; unlike a room layer, retaining the hardware wrap is authentic.
+    const std::uint16_t bg_control = rd16(bus, kScreen + 0x2Cu);
+    const std::uint16_t blend_control = rd16(bus, kScreen + 0x66u);
+    return (bg_control & 0x1F0Cu) == 0x1E04u &&
+           (blend_control & 0x00C8u) == 0x0048u;
+}
+
 void refresh_scanline(gba::GbaBus* bus, int screen_y) {
     if (g_state.bus == bus && g_state.screen_y == screen_y) return;
 
@@ -106,6 +159,7 @@ void refresh_scanline(gba::GbaBus* bus, int screen_y) {
         rd16(bus, kRoomControls + 0x20u));
     g_state.hud_hide_flags = rd8(bus, kHud + 1u);
     g_state.message_active = (rd8(bus, kMessage) & 0x7Fu) != 0;
+    g_state.cloud_overlay = is_hyrule_cloud_overlay(bus);
 }
 
 extern "C" int minish_tilemap_provider(int bg, int hardware_x, int screen_y,
@@ -116,30 +170,32 @@ extern "C" int minish_tilemap_provider(int bg, int hardware_x, int screen_y,
 
     const std::uint32_t full_map = g_state.full_map[bg];
     if (!full_map) {
+        if (bg == 3 && g_state.cloud_overlay)
+            return gba::kWsTilemapKeepWrapped;
         // UI and other non-room layers have no authored continuation. Returning
         // false makes only their expanded-margin pixels transparent instead of
         // repeating the 256px hardware ring.
-        return 0;
+        return gba::kWsTilemapUnavailable;
     }
 
     // Fail closed while a room is absent/loading or if guest state is outside
     // the format's 64x64-metatile maximum.
     if (g_state.room_width <= 0 || g_state.room_width > 1024 ||
         g_state.room_height <= 0 || g_state.room_height > 1024) {
-        return 0;
+        return gba::kWsTilemapUnavailable;
     }
 
     const int room_x = g_state.camera_x + hardware_x;
     const int room_y = g_state.camera_y + screen_y;
     if (room_x < 0 || room_y < 0 ||
         room_x >= g_state.room_width || room_y >= g_state.room_height) {
-        return 0;
+        return gba::kWsTilemapUnavailable;
     }
 
     const std::uint32_t index = static_cast<std::uint32_t>(
         (room_y >> 3) * kFullMapStride + (room_x >> 3));
     *out_entry = rd16(bus, full_map + index * 2u);
-    return 1;
+    return gba::kWsTilemapReplace;
 }
 
 extern "C" int minish_hud_bg_x_provider(int bg, int output_x, int screen_y,
@@ -260,6 +316,8 @@ void install_extended_view(std::uint32_t, std::uint32_t) {
     gba::g_ws_bg_x_provider = &minish_hud_bg_x_provider;
     gba::g_ws_bg_x_provider_layers = 1u << 0;
     gba::g_ws_obj_attr_x_provider = &minish_hud_obj_x_provider;
+    g_runtime_thumb_alu_imm_override = &minish_view_alu_immediate;
+    gba::g_rom_read32_override = &minish_view_rom_read32;
     std::fprintf(stderr,
         "[minish:view] authentic room-map margin source enabled\n");
 }
