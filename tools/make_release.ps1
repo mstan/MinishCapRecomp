@@ -92,7 +92,7 @@ foreach ($g in $games) {
   # Bundle the self-contained tcc overlay toolchain (TinyCC + overlay shim
   # headers) next to the exe so a toolchain-less player box self-heals overlay
   # gaps via tcc (overlay backend auto -> tcc). See gbarecomp/tools/fetch_tcc.ps1.
-  $engine = (Resolve-Path (Join-Path $PSScriptRoot '..\..\gbarecomp')).Path
+  $engine = (Resolve-Path (Join-Path $PSScriptRoot '..\gbarecomp')).Path
   & (Join-Path $engine 'tools\fetch_tcc.ps1') -Toolchain (Join-Path $stage 'overlay_toolchain') -EngineRoot $engine
 
   # ROM SHA-1 from game.toml (best-effort; for the README only).
