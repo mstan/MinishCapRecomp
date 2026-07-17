@@ -37,9 +37,17 @@ struct ScanlineState {
     int camera_y = 0;
     int room_width = 0;
     int room_height = 0;
+    std::uint8_t hud_hide_flags = 0;
+    bool message_active = false;
 };
 
 ScanlineState g_state;
+gba::GbaBus* g_bus = nullptr;
+
+gba::GbaBus* active_game_bus() {
+    if (!g_bus) g_bus = gbarecomp::active_bus();
+    return g_bus;
+}
 
 std::uint8_t rd8(gba::GbaBus* bus, std::uint32_t addr) {
     if (addr >= 0x02000000u && addr < 0x02040000u)
@@ -96,11 +104,13 @@ void refresh_scanline(gba::GbaBus* bus, int screen_y) {
         rd16(bus, kRoomControls + 0x1Eu));
     g_state.room_height = static_cast<int>(
         rd16(bus, kRoomControls + 0x20u));
+    g_state.hud_hide_flags = rd8(bus, kHud + 1u);
+    g_state.message_active = (rd8(bus, kMessage) & 0x7Fu) != 0;
 }
 
 extern "C" int minish_tilemap_provider(int bg, int hardware_x, int screen_y,
                                         std::uint16_t* out_entry) {
-    gba::GbaBus* bus = gbarecomp::active_bus();
+    gba::GbaBus* bus = active_game_bus();
     if (!bus || !out_entry || bg < 0 || bg > 3) return 0;
     refresh_scanline(bus, screen_y);
 
@@ -132,19 +142,19 @@ extern "C" int minish_tilemap_provider(int bg, int hardware_x, int screen_y,
     return 1;
 }
 
-bool message_active(gba::GbaBus* bus) {
-    return (rd8(bus, kMessage) & 0x7Fu) != 0;
-}
-
 extern "C" int minish_hud_bg_x_provider(int bg, int output_x, int screen_y,
                                          int* out_hardware_x) {
-    gba::GbaBus* bus = gbarecomp::active_bus();
-    if (!bus || !out_hardware_x || bg != 0 || message_active(bus)) return 0;
+    if (!out_hardware_x || bg != 0) return 0;
+    if (screen_y < 8 || (screen_y >= 32 && screen_y < 128)) return 0;
+    gba::GbaBus* bus = active_game_bus();
+    if (!bus) return 0;
+    refresh_scanline(bus, screen_y);
+    if (g_state.message_active) return 0;
 
     const int left = static_cast<int>(g_ws_extra_left);
     const int right = static_cast<int>(g_ws_extra_right);
     const int extra = left + right;
-    const int hide_flags = rd8(bus, kHud + 1u);
+    const int hide_flags = g_state.hud_hide_flags;
     const bool hearts = (hide_flags & 0x10) == 0 &&
         screen_y >= 8 && screen_y < 32;
     const bool keys = (hide_flags & 0x80) == 0 &&
@@ -196,8 +206,8 @@ int distance(int a, int b) {
 extern "C" int minish_hud_obj_x_provider(int, std::uint16_t attr0,
                                           std::uint16_t attr1,
                                           std::uint16_t attr2, int* out_x) {
-    gba::GbaBus* bus = gbarecomp::active_bus();
-    if (!bus || !out_x || message_active(bus)) return 0;
+    gba::GbaBus* bus = active_game_bus();
+    if (!bus || !out_x || (rd8(bus, kMessage) & 0x7Fu) != 0) return 0;
 
     const int raw_x = attr1 & 0x1FFu;
     const int raw_y = signed_oam_y(attr0);
@@ -244,9 +254,11 @@ extern "C" int minish_hud_obj_x_provider(int, std::uint16_t attr0,
 
 void install_extended_view(std::uint32_t, std::uint32_t) {
     g_state = {};
+    g_bus = nullptr;
     gba::g_ws_tilemap_provider = &minish_tilemap_provider;
     gba::g_ws_authored_margin_layers = 1;
     gba::g_ws_bg_x_provider = &minish_hud_bg_x_provider;
+    gba::g_ws_bg_x_provider_layers = 1u << 0;
     gba::g_ws_obj_attr_x_provider = &minish_hud_obj_x_provider;
     std::fprintf(stderr,
         "[minish:view] authentic room-map margin source enabled\n");
