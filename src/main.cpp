@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "runtime.h"
+#include "minish_extended_view.h"
 
 #if defined(GBAGAME_RECOMP_UI)
 #include "game_launcher_boot.h"
@@ -29,7 +30,8 @@ namespace {
 
 void print_usage() {
     std::printf(
-        "MinishCapRecomp [--bios <path>] [--rom <path>] [game.toml]\n"
+        "MinishCapRecomp [--bios <path>] [--rom <path>] "
+        "[--resize-view] [game.toml]\n"
         "\n"
         "Both BIOS and ROM are required (either via flags or via the\n"
         "[bios] / [rom] sections of game.toml). The runtime refuses\n"
@@ -68,6 +70,13 @@ int main(int argc, char** argv) {
     // The launcher's GAME card uses it for its "ROM verified" check; the
     // asset picker treats it as informational next to the SHA-1 gate.
     opts.builtin_rom_crc32  = 0xABCEBBB1u;
+    // Experimental, elective viewport policy: the native 240x160 window is
+    // resizable only when the launcher widescreen setting (or --resize-view)
+    // opts in. Wider host aspects reveal more world up to 480x160. This is a
+    // separate policy from MMZ's fixed --view-width aspect choices.
+    opts.max_resize_view_width = 480;
+    opts.resize_driven_view    = true;
+    opts.extended_view_init    = &minish::install_extended_view;
     opts.launcher_region    = "USA";
     opts.launcher_game_config = "game.toml";   // prefill ROM/BIOS from [rom]/[bios]
     // Save: game.toml [save] has no explicit path — the runtime derives

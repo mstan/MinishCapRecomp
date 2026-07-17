@@ -47,6 +47,7 @@ file(GLOB MINISH_GENERATED_SOURCES CONFIGURE_DEPENDS
 add_executable(MinishCapRecomp
     src/main.cpp
     src/game_config.cpp
+    src/minish_extended_view.cpp
     ${MINISH_GENERATED_SOURCES}
 )
 

@@ -69,6 +69,33 @@ Save chip: EEPROM. (Other regions can be added by checksum in `config/<region>.t
 
 Save states: **Shift+F1–F9** save to a slot, **F1–F9** load it.
 
+## Experimental resize-driven extended view
+
+The faithful default remains 240x160. To opt into the experiment, enable
+**Widescreen** in the pre-boot launcher's settings, pass `--resize-view`, or set
+the following in `game.toml`:
+
+```toml
+[video]
+resize_view = true
+```
+
+This is intentionally different from Mega Man Zero's fixed-width modes. The
+window still opens at the native 3:2 size. As its aspect ratio becomes wider,
+the logical framebuffer widens from 240 up to 480 pixels while remaining 160
+pixels tall, revealing additional world on both sides of the original camera.
+At 3:2 the literal native renderer is used; a typical 21:9 fullscreen display
+requests roughly 373x160. Resizing to a larger window with the same 3:2 aspect
+only scales the native image and does not reveal more world.
+
+This first implementation is a feasibility prototype. The side margins read
+Minish Cap's complete rendered room-layer buffers rather than the GBA's wrapping
+32x32 hardware tilemap, so authored scenery continues without repeating. An
+actual room edge clears naturally where no adjacent room pixels exist.
+Entities, scripted triggers, screen-space effects, HUD placement, and the
+hardware OAM limit retain original behavior, so they can pop in or assume the
+240-pixel viewport. Disable the setting for faithful presentation.
+
 ## How it self-improves
 
 `gbarecomp`'s coverage is honest: a path that wasn't statically recompiled is

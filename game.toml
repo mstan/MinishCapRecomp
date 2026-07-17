@@ -66,6 +66,10 @@ window_title  = "MinishCapRecomp"
 # Overridable at launch with the GBARECOMP_SCREEN env var.
 [video]
 screen = "frontlit"
+# Experimental opt-in: keep logical height at 160 and derive logical width
+# from the live window/fullscreen aspect ratio (240..480). The launcher
+# persists the same choice through its Widescreen setting.
+resize_view = false
 
 # ── Audio ───────────────────────────────────────────────────────────
 # MP2K (m4a) verified-enhancement shadow mixer: re-renders the driver's
