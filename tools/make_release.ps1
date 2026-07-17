@@ -9,7 +9,9 @@ MinGW / CMake / Ninja toolchain (matches the sibling Pokemon repos' scripts):
 Ships ONLY a zip (never a bare exe; the MinGW exe needs the bundled runtime
 DLLs). The zip contains: MinishCapRecomp.exe (Release, MinGW, stripped) + the
 four runtime DLLs (SDL2.dll, libgcc_s_seh-1.dll, libstdc++-6.dll,
-libwinpthread-1.dll) + README.md.
+libwinpthread-1.dll) + assets\ (the recomp-ui pre-boot launcher's fonts +
+image TGAs, staged next to the exe by recomp_target_launcher_ui's POST_BUILD)
++ README.md.
 
 (Supersedes the older package_release.ps1, which built a static standalone exe;
 this matches the dynamic + bundled-DLL layout shipped for every other GBA game.)
@@ -78,6 +80,15 @@ foreach ($g in $games) {
   Copy-Item $exe $stage
   foreach ($d in $dlls) { Copy-Item (Join-Path $MingwBin $d) $stage }
 
+  # recomp-ui launcher assets (fonts + img TGAs), staged next to the exe by
+  # recomp_target_launcher_ui's POST_BUILD. The launcher loads them from
+  # <exe>\assets\ at runtime — a zip without them shows a blank launcher.
+  $assets = Join-Path $build 'assets'
+  if (-not (Test-Path (Join-Path $assets 'img'))) {
+    throw "recomp-ui launcher assets missing: $assets (build with GBAGAME_RECOMP_UI=ON)"
+  }
+  Copy-Item $assets -Destination $stage -Recurse
+
   # Bundle the self-contained tcc overlay toolchain (TinyCC + overlay shim
   # headers) next to the exe so a toolchain-less player box self-heals overlay
   # gaps via tcc (overlay backend auto -> tcc). See gbarecomp/tools/fetch_tcc.ps1.
@@ -94,8 +105,9 @@ foreach ($g in $games) {
   @"
 # $($g.Title) - GBA static recompilation (Windows x64)
 
-Release build: an optimized native port. Running ``$target.exe`` opens a picker
-for your ROM (and, on first run, your GBA BIOS), then the game window.
+Release build: an optimized native port. Running ``$target.exe`` opens the
+pre-boot launcher: pick your ROM (and, on first run, your GBA BIOS under
+Settings > System), tune display/audio/controls, then PLAY.
 
 Static recompilation turns the game's ARM7TDMI code into native C++ (via the
 [gbarecomp](https://github.com/mstan/gbarecomp) framework); the rest of the GBA
@@ -103,12 +115,16 @@ Static recompilation turns the game's ARM7TDMI code into native C++ (via the
 
 ## How to run
 
-1. Extract this folder (keep the four DLLs next to ``$target.exe``).
-2. Run ``$target.exe``. On first launch it prompts for:
+1. Extract this folder (keep the four DLLs and the ``assets`` folder next to
+   ``$target.exe``).
+2. Run ``$target.exe``. The launcher opens: pick
    - your legally-obtained **$($g.Title) (USA)** ROM (``.gba``)$(if ($sha) { " - expected SHA-1 ``$sha``" })
-   - a **GBA BIOS** dump (``gba_bios.bin``).
-   The picked paths are cached to ``rom.cfg`` / ``bios.cfg`` next to the exe;
-   save data lands next to the exe.
+   - a **GBA BIOS** dump (``gba_bios.bin``) under Settings > System.
+   Settings, key rebinds, and hotkeys persist in ``config.ini`` /
+   ``keybinds.ini`` next to the exe; the picked paths are cached to
+   ``rom.cfg`` / ``bios.cfg``; save data lands next to your ROM.
+   (``--no-launcher`` boots straight to the game; "Skip launcher on boot"
+   in the launcher does the same persistently, ``--launcher`` brings it back.)
 
 The ROM and BIOS are **never** redistributed - supply your own dumps.
 

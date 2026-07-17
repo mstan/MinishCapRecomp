@@ -78,6 +78,34 @@ target_compile_definitions(MinishCapRecomp PRIVATE
     GBARECOMP_DEFAULT_GAME_CONFIG="game.toml"
 )
 
+# ─────────────────────────────────────────────────────────────────────
+# recomp-ui pre-boot launcher (Dear ImGui), consumed as a git submodule
+# (junctioned locally to the shared checkout). Isolated in its own
+# static lib so recomp-ui's sources + RECOMP_LAUNCHER define never
+# touch the giant generated/*.c TU flags — only main.cpp (gated on
+# GBAGAME_RECOMP_UI) and launcher_boot.cpp know the launcher exists.
+# ─────────────────────────────────────────────────────────────────────
+option(GBAGAME_RECOMP_UI "Build the recomp-ui pre-boot launcher" ON)
+if(GBAGAME_RECOMP_UI)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/recomp-ui/recomp_ui.cmake)
+    add_library(game_launcher_ui STATIC src/game_launcher_boot.cpp)
+    target_include_directories(game_launcher_ui PRIVATE
+        "${GBARECOMP_ROOT}/src/runtime"   # launcher_seam.h + runtime.h
+        "${GBARECOMP_ROOT}/src/gba"
+        src
+    )
+    # sources, includes, RECOMP_LAUNCHER, asset staging
+    recomp_target_launcher_ui(game_launcher_ui
+        BOXART ${CMAKE_CURRENT_SOURCE_DIR}/recomp/launcher/boxart.tga)
+    find_package(SDL2 REQUIRED)
+    target_link_libraries(game_launcher_ui PUBLIC SDL2::SDL2)
+    if(WIN32)
+        target_link_libraries(game_launcher_ui PUBLIC opengl32)
+    endif()
+    target_link_libraries(MinishCapRecomp PRIVATE game_launcher_ui)
+    set_property(SOURCE src/main.cpp APPEND PROPERTY COMPILE_DEFINITIONS GBAGAME_RECOMP_UI)
+endif()
+
 if(MSVC)
     target_link_options(MinishCapRecomp PRIVATE /STACK:16777216)
 elseif(MINGW OR WIN32)

@@ -7,12 +7,23 @@
 //
 // All three are optional on the command line; missing values are
 // pulled from game.toml. Hashes are verified before any code runs.
+//
+// Windowed play first runs the recomp-ui pre-boot launcher (Dear ImGui;
+// see game_launcher_boot.h + gbarecomp's launcher_seam.h) to pick the ROM/BIOS
+// and tune settings; the launcher's choices become ordinary CLI args for
+// run_game(). Headless/explicit invocations (--tcp/--steps/--frames/
+// --no-window/--rom/GBARECOMP_NO_LAUNCHER) bypass it entirely.
 
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "runtime.h"
+
+#if defined(GBAGAME_RECOMP_UI)
+#include "game_launcher_boot.h"
+#endif
 
 namespace {
 
@@ -25,7 +36,11 @@ void print_usage() {
         "to start unless both hash-verify.\n"
         "\n"
         "Default BIOS path: ../gbarecomp/bios/gba_bios.bin\n"
-        "Default game config: game.toml (in CWD)\n");
+        "Default game config: game.toml (in CWD)\n"
+        "\n"
+        "Windowed play opens the pre-boot launcher first; --no-launcher\n"
+        "skips it for one run, --launcher forces it past a persisted\n"
+        "\"skip launcher\" setting.\n");
 }
 
 }  // namespace
@@ -47,11 +62,24 @@ int main(int argc, char** argv) {
     // without a sibling game.toml. The picker still validates against
     // these values; CLI / TOML can override.
     gbarecomp::RunOptions opts;
-    opts.builtin_game_name  = "Minish Cap (USA)";
+    opts.builtin_game_name  = "The Legend of Zelda: The Minish Cap";
     opts.builtin_rom_sha1   = "b4bd50e4131b027c334547b4524e2dbbd4227130";
-    // CRC32 is informational only (see gbarecomp's SHA-only gate
-    // decision in commit 9fd99b6); leave it 0 so the picker doesn't
-    // warn on a value we'd otherwise need to keep in lockstep.
-    opts.builtin_rom_crc32  = 0;
+    // CRC32 of the pinned USA ROM (same dump the SHA-1 above gates on).
+    // The launcher's GAME card uses it for its "ROM verified" check; the
+    // asset picker treats it as informational next to the SHA-1 gate.
+    opts.builtin_rom_crc32  = 0xABCEBBB1u;
+    opts.launcher_region    = "USA";
+    // Save: game.toml [save] has no explicit path — the runtime derives
+    // <rom>.sav, and the launcher seam shows the same derivation.
+
+#if defined(GBAGAME_RECOMP_UI)
+    std::vector<std::string> args(argv, argv + argc);
+    if (game_launcher_preboot(args, opts)) return 0;   // user quit the launcher
+    std::vector<char*> av;
+    av.reserve(args.size());
+    for (auto& s : args) av.push_back(s.data());
+    return gbarecomp::run_game(static_cast<int>(av.size()), av.data(), opts);
+#else
     return gbarecomp::run_game(argc, argv, opts);
+#endif
 }
