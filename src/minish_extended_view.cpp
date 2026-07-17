@@ -7,6 +7,9 @@
 #include "gba_ppu.h"
 #include "runtime_bus_bridge.h"
 
+extern "C" unsigned g_ws_extra_left;
+extern "C" unsigned g_ws_extra_right;
+
 namespace minish {
 namespace {
 
@@ -18,9 +21,13 @@ constexpr std::uint32_t kMapTop = 0x0200B650u;
 constexpr std::uint32_t kMapBottom = 0x02025EB0u;
 constexpr std::uint32_t kMapDataTopSpecial = 0x02002F00u;
 constexpr std::uint32_t kMapDataBottomSpecial = 0x02019EE0u;
+constexpr std::uint32_t kMessage = 0x02000050u;
+constexpr std::uint32_t kHud = 0x0200AF00u;
 constexpr std::uint32_t kRoomControls = 0x03000BF0u;
 constexpr std::uint32_t kScreen = 0x03000F50u;
 constexpr int kFullMapStride = 128;
+constexpr int kHudElementsOffset = 0x34;
+constexpr int kHudElementSize = 0x20;
 
 struct ScanlineState {
     gba::GbaBus* bus = nullptr;
@@ -125,12 +132,122 @@ extern "C" int minish_tilemap_provider(int bg, int hardware_x, int screen_y,
     return 1;
 }
 
+bool message_active(gba::GbaBus* bus) {
+    return (rd8(bus, kMessage) & 0x7Fu) != 0;
+}
+
+extern "C" int minish_hud_bg_x_provider(int bg, int output_x, int screen_y,
+                                         int* out_hardware_x) {
+    gba::GbaBus* bus = gbarecomp::active_bus();
+    if (!bus || !out_hardware_x || bg != 0 || message_active(bus)) return 0;
+
+    const int left = static_cast<int>(g_ws_extra_left);
+    const int right = static_cast<int>(g_ws_extra_right);
+    const int extra = left + right;
+    const int hide_flags = rd8(bus, kHud + 1u);
+    const bool hearts = (hide_flags & 0x10) == 0 &&
+        screen_y >= 8 && screen_y < 32;
+    const bool keys = (hide_flags & 0x80) == 0 &&
+        screen_y >= 128 && screen_y < 144;
+    const bool rupees = (hide_flags & 0x40) == 0 &&
+        screen_y >= 144 && screen_y < 160;
+
+    if (output_x < left) {
+        // Hearts and the sword charge bar occupy BG0 rows 1..3, columns
+        // 0..11. Remap those native samples to the physical left edge.
+        const int native_x = output_x;
+        if (hearts && native_x < 96) {
+            *out_hardware_x = native_x;
+            return 1;
+        }
+    } else if (output_x >= left + 240) {
+        // Dungeon keys use rows 16..17; rupees use rows 18..19. Preserve
+        // their distance from the physical right edge at every view width.
+        const int native_x = output_x - extra;
+        if ((keys && native_x >= 200 && native_x < 232) ||
+            (rupees && native_x >= 192 && native_x < 232)) {
+            *out_hardware_x = native_x;
+            return 1;
+        }
+    } else {
+        // The expanded renderer normally centers the complete native BG0.
+        // Once a HUD region has an edge-anchored copy, suppress that centered
+        // source region so the player never sees both versions at once.
+        const int native_x = output_x - left;
+        if ((left > 0 && hearts && native_x >= 0 && native_x < 96) ||
+            (right > 0 && keys && native_x >= 200 && native_x < 232) ||
+            (right > 0 && rupees && native_x >= 192 && native_x < 232)) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int signed_oam_y(std::uint16_t attr0) {
+    int y = attr0 & 0xFFu;
+    return y >= 160 ? y - 256 : y;
+}
+
+int distance(int a, int b) {
+    const int d = a - b;
+    return d < 0 ? -d : d;
+}
+
+extern "C" int minish_hud_obj_x_provider(int, std::uint16_t attr0,
+                                          std::uint16_t attr1,
+                                          std::uint16_t attr2, int* out_x) {
+    gba::GbaBus* bus = gbarecomp::active_bus();
+    if (!bus || !out_x || message_active(bus)) return 0;
+
+    const int raw_x = attr1 & 0x1FFu;
+    const int raw_y = signed_oam_y(attr0);
+    const unsigned tile = attr2 & 0x3FFu;
+    for (int index = 0; index < 24; ++index) {
+        const std::uint32_t element = kHud + kHudElementsOffset +
+            static_cast<std::uint32_t>(index * kHudElementSize);
+        const std::uint8_t flags = rd8(bus, element);
+        if ((flags & 3u) != 3u) continue;  // allocated and currently drawn
+
+        const unsigned type = rd8(bus, element + 1u);
+        const bool right_hud = type <= 5u || type == 9u || type == 10u;
+        const bool left_hud = type >= 6u && type <= 8u;
+        if (!right_hud && !left_hud) continue;
+
+        const unsigned base_tile = rd16(bus, element + 0x1Au) & 0x3FFu;
+        const unsigned num_tiles = rd8(bus, element + 0x19u);
+        // The three button elements use a shared dynamic tile allocation and
+        // report numTiles=0 even while DrawDirect emits their OAM pieces.
+        // Position matching keeps the conservative fallback span tied to the
+        // active element instead of treating every early OAM entry as HUD.
+        const unsigned tile_span = num_tiles != 0 ? num_tiles : 0x20u;
+        if (((tile - base_tile) & 0x3FFu) >= tile_span)
+            continue;
+
+        const int element_x = static_cast<std::int16_t>(
+            rd16(bus, element + 0x0Cu));
+        const int element_y = static_cast<std::int16_t>(
+            rd16(bus, element + 0x0Eu));
+        if (distance(raw_x, element_x) > 32 ||
+            distance(raw_y, element_y) > 32) {
+            continue;
+        }
+
+        *out_x = raw_x + (right_hud
+            ? static_cast<int>(g_ws_extra_right)
+            : -static_cast<int>(g_ws_extra_left));
+        return 1;
+    }
+    return 0;
+}
+
 }  // namespace
 
 void install_extended_view(std::uint32_t, std::uint32_t) {
     g_state = {};
     gba::g_ws_tilemap_provider = &minish_tilemap_provider;
     gba::g_ws_authored_margin_layers = 1;
+    gba::g_ws_bg_x_provider = &minish_hud_bg_x_provider;
+    gba::g_ws_obj_attr_x_provider = &minish_hud_obj_x_provider;
     std::fprintf(stderr,
         "[minish:view] authentic room-map margin source enabled\n");
 }

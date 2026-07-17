@@ -71,9 +71,9 @@ Save states: **Shift+F1–F9** save to a slot, **F1–F9** load it.
 
 ## Experimental resize-driven extended view
 
-The faithful default remains 240x160. To opt into the experiment, enable
-**Widescreen** in the pre-boot launcher's settings, pass `--resize-view`, or set
-the following in `game.toml`:
+The faithful default remains 240x160. The experiment is intentionally hidden
+from the pre-boot launcher until its performance has been audited. Developers
+can opt in by passing `--resize-view` or setting the following in `game.toml`:
 
 ```toml
 [video]
@@ -92,9 +92,11 @@ This first implementation is a feasibility prototype. The side margins read
 Minish Cap's complete rendered room-layer buffers rather than the GBA's wrapping
 32x32 hardware tilemap, so authored scenery continues without repeating. An
 actual room edge clears naturally where no adjacent room pixels exist.
-Entities, scripted triggers, screen-space effects, HUD placement, and the
-hardware OAM limit retain original behavior, so they can pop in or assume the
-240-pixel viewport. Disable the setting for faithful presentation.
+The gameplay HUD follows the physical corners as the view changes width, while
+dialogue remains centered over the native play area. Entities, scripted
+triggers, other screen-space effects, and the hardware OAM limit retain original
+behavior, so they can pop in or assume the 240-pixel viewport. Remove the
+explicit opt-in for faithful presentation.
 
 ## How it self-improves
 
