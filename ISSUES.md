@@ -197,6 +197,39 @@ crash on the path out of the house through the right door.
   up/down ~30 s windowed-maximized, then Alt+Enter fullscreen ~30 s, quit; feed
   the CSV to the analyzer. Compare the ultrawide (VRR 50–164 Hz) and the 60 Hz
   Acer.
+- **▶ ROOT CAUSE FOUND + FIXED 2026-07-17 (Fable) — NOT display cadence; a
+  margin/center camera clock seam.** Probe runs on the real display (D3D9 and
+  D3D11 flip-model backends, G-Sync enabled windowed+fullscreen) left the
+  artifact unchanged, and the user observed the decisive discriminator: the
+  central 3:2 region is clean while ONLY the extended margins warble — display
+  cadence would warble both identically. A new per-frame seam trace
+  (`GBARECOMP_WS_CAMTRACE=<path>`, one CSV row per provider frame latch:
+  provider camera, raw EWRAM inputs, hardware HOFS/VOFS, VCOUNT-at-latch,
+  ring-bias decision+scores) measured the defect directly in the deterministic
+  hold-Up replay: **the provider's render-time EWRAM camera sample ran one
+  game-tick ahead of the latched HOFS/VOFS on 46/420 (~12%) of walking frames**
+  (alternating dcam=-2 vs dhw=-1 / dcam=-1 vs dhw=-2), i.e. the margins
+  oscillated 1–2 px against the register-latched center — waviness at narrow
+  widths, lines/shear on a wide field, worse under load ("high action") where
+  the sample lands mid-update more often. Ring-bias flips and shake: exonerated
+  (0 events in trace). The earlier "content proven clean" framedump verdict was
+  a resolution artifact: integer cross-correlation cannot see a 1–2 px
+  alternating skew at 1.33 px/frame walking speed.
+  **FIX (`9a63c6c`, `src/minish_extended_view.cpp`): single-clock margin
+  camera** — anchor the absolute room camera from EWRAM once, then advance it
+  every frame by the hardware HOFS/VOFS deltas the center itself composes from
+  (mod-16 unwrap absorbs the tile-ring rotation's exact ±16 jumps; >1-metatile
+  disagreement re-anchors for room warps/fast pans). Measured result: mismatch
+  frames **46 → 2**, the 2 being the doorway room-transition camera snap
+  (correct re-anchor). `GBARECOMP_WS_CAM_EWRAM=1` restores old sampling for
+  A/B. Awaiting user live validation.
+  **Still open, split out:** (a) ~7% of presents arrive >25 ms late
+  quasi-periodically (~every 13–14 frames) with a catch-up frame after — a
+  runtime pacing hitch affecting all games/paths (likely the "general warble at
+  native res"); (b) 59.7275-on-165 Hz pulldown judder remains physically
+  present without VRR pacing (ChatGPT-consult architecture: SDL3/custom-D3D11
+  flip model + G-Sync windowed, emulation/presentation thread split) — both far
+  less visible than the now-fixed seam.
 
 ### MC-WS-003: Ground cloud/shadow effect stops at the native viewport — RESOLVED 2026-07-17
 - **Observed:** The moving cloud-like shading on the ground is present only across
