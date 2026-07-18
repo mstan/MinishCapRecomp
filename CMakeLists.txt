@@ -40,6 +40,11 @@ add_executable(verify_rom_hash tools/verify_rom_hash/main.cpp)
 # runtime libs. The Phase 0 scaffold has no generated/*.c yet, so we
 # build with just main + game_config to verify the wiring compiles.
 # ─────────────────────────────────────────────────────────────────────
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/recompiled.cpp")
+    message(FATAL_ERROR
+        "Stale monolithic generated/recompiled.cpp found. Regenerate with "
+        "symbols/minishcap.toml and the current gbarecomp before building.")
+endif()
 file(GLOB MINISH_GENERATED_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/generated/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/generated/*.cpp")

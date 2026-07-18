@@ -140,13 +140,14 @@ you can regenerate the C and build directly:
 
 ```
 # from PowerShell, mingw64 on PATH
-gba_recompile --rom roms/minishcap_usa.gba --config game.toml --out generated
+gba_recompile --rom roms/minishcap_usa.gba --config symbols/minishcap.toml --out generated
 cmake -S . -B build -G Ninja -DGBARECOMP_ROOT=../gbarecomp
 cmake --build build --target MinishCapRecomp
 ```
 
 (`gba_recompile` is built from the `gbarecomp` checkout; see that repo's README.)
-The recompiled translation unit is large — expect a multi-minute compile.
+The recompiler emits deterministic parallel translation units; current
+gbarecomp also rejects the retired monolithic `recompiled.cpp` output.
 
 ## Legal
 
