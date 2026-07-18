@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 
 #include "gba_bus.h"
 #include "gba_ppu.h"
@@ -55,6 +56,43 @@ ScanlineState g_state;
 gba::GbaBus* g_bus = nullptr;
 int g_ring_bias_x = 0;
 int g_ring_bias_y = 0;
+// MC-WS-002 seam trace: resolver scores exposed for the per-frame trace row.
+int g_bias_best_score = -1;
+int g_bias_zero_score = -1;
+
+// ── MC-WS-002 single-clock margin camera ─────────────────────────────────
+// Measured defect (camtrace 2026-07-17): sampling the EWRAM camera at render
+// time runs one game-tick ahead of the latched HOFS/VOFS on ~12% of walking
+// frames — the margins visibly oscillate 1-2px against the always-latched
+// center. Fix: anchor the absolute room camera from EWRAM once, then advance
+// it every frame by the HARDWARE scroll deltas the center itself is composed
+// from — margins and center then share one clock by construction. The game's
+// 16px tile-ring rotation adds exact ±16 jumps to HOFS/VOFS; per-frame camera
+// motion is far below 8px, so unwrapping deltas mod 16 recovers pure motion.
+// Re-anchor whenever the unwrapped prediction and the EWRAM camera disagree
+// by a full metatile (room load, door warp, cutscene camera snap).
+// GBARECOMP_WS_CAM_EWRAM=1 restores the old render-time EWRAM sampling (A/B).
+struct IntegratedCamera {
+    bool anchored = false;
+    int cam_x = 0;
+    int cam_y = 0;
+    int last_hofs = 0;
+    int last_vofs = 0;
+    int last_origin_x = 0;
+    int last_origin_y = 0;
+    bool used_ewram = false;  // what the last frame actually used (trace)
+};
+IntegratedCamera g_icam;
+
+int unwrap16(int d) {  // signed mod-16 unwrap of a mod-512 scroll delta
+    d &= 15;
+    return d > 8 ? d - 16 : d;
+}
+
+int wrap512(int d) {  // signed mod-512 delta
+    d &= 511;
+    return d > 256 ? d - 512 : d;
+}
 
 struct ObjXCacheEntry {
     std::uint16_t attr0 = 0;
@@ -225,6 +263,59 @@ void resolve_ring_bias(gba::GbaBus* bus) {
     const bool confident = best_score >= zero_score + 8;
     g_ring_bias_x = confident ? best_x : 0;
     g_ring_bias_y = confident ? best_y : 0;
+    g_bias_best_score = best_score;
+    g_bias_zero_score = zero_score;
+}
+
+// ── MC-WS-002 seam trace ─────────────────────────────────────────────────
+// One CSV row per frame latch, armed by GBARECOMP_WS_CAMTRACE=<path>. Records
+// the margin provider's EWRAM-derived camera next to the hardware HOFS/VOFS
+// the center 240px is composed from, plus VCOUNT at latch time (WHEN in the
+// frame the margin camera was sampled) and the ring-bias resolver decision.
+// The margin/center seam is real iff, frame-over-frame, d(camera) diverges
+// from d(HOFS/VOFS) or the bias flips while the camera moves smoothly.
+void camtrace_frame(gba::GbaBus* bus, int scroll_x, int scroll_y,
+                    int origin_x, int origin_y, int shake_x, int shake_y) {
+    static std::FILE* f = nullptr;
+    static bool tried = false;
+    static unsigned long long n = 0;
+    if (!tried) {
+        tried = true;
+        const char* p = std::getenv("GBARECOMP_WS_CAMTRACE");
+        if (p && *p) {
+            f = std::fopen(p, "w");
+            if (f) {
+                std::fprintf(f,
+                    "n,vcount,cam_x,cam_y,scroll_x,scroll_y,origin_x,origin_y,"
+                    "shake_x,shake_y,hofs0,vofs0,hofs1,vofs1,hofs2,vofs2,"
+                    "hofs3,vofs3,bias_x,bias_y,bias_best,bias_zero,"
+                    "room_w,room_h,maps,cammode\n");
+            }
+        }
+    }
+    if (!f) return;
+    const unsigned vcount = bus->io().read16(0x006u);
+    int hofs[4];
+    int vofs[4];
+    for (int bg = 0; bg < 4; ++bg) {
+        hofs[bg] = bus->io().read16(0x10u + bg * 4u) & 0x1FF;
+        vofs[bg] = bus->io().read16(0x12u + bg * 4u) & 0x1FF;
+    }
+    int maps = 0;
+    for (int bg = 0; bg < 4; ++bg)
+        if (g_state.full_map[bg]) maps |= 1 << bg;
+    std::fprintf(f,
+        "%llu,%u,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,"
+        "%d,%d,%d,%d\n",
+        n++, vcount, g_state.camera_x, g_state.camera_y, scroll_x, scroll_y,
+        origin_x, origin_y, shake_x, shake_y,
+        hofs[0], vofs[0], hofs[1], vofs[1], hofs[2], vofs[2],
+        hofs[3], vofs[3],
+        g_state.ring_bias_x, g_state.ring_bias_y,
+        g_bias_best_score, g_bias_zero_score,
+        g_state.room_width, g_state.room_height, maps,
+        g_icam.used_ewram ? 1 : 0);
+    std::fflush(f);
 }
 
 void refresh_scanline(gba::GbaBus* bus, int screen_y) {
@@ -266,8 +357,50 @@ void refresh_scanline(gba::GbaBus* bus, int screen_y) {
         rd8(bus, kRoomControls + 0x24u));
     const int shake_y = static_cast<std::int8_t>(
         rd8(bus, kRoomControls + 0x25u));
-    g_state.camera_x = base_camera_x + shake_x;
-    g_state.camera_y = base_camera_y + shake_y;
+    const int ewram_cam_x = base_camera_x + shake_x;
+    const int ewram_cam_y = base_camera_y + shake_y;
+    // Single-clock margin camera (see IntegratedCamera above): advance the
+    // absolute room camera by the hardware scroll deltas the center is
+    // composed from; the render-time EWRAM sample only anchors/re-anchors.
+    static const bool use_ewram_cam = [] {
+        const char* e = std::getenv("GBARECOMP_WS_CAM_EWRAM");
+        return e && *e && *e != '0';
+    }();
+    const int ref_bg = bottom_bg >= 0 ? bottom_bg : top_bg;
+    if (use_ewram_cam || ref_bg < 0) {
+        g_state.camera_x = ewram_cam_x;
+        g_state.camera_y = ewram_cam_y;
+        g_icam.anchored = false;
+        g_icam.used_ewram = true;
+    } else {
+        const int hofs = bus->io().read16(0x10u + ref_bg * 4u) & 0x1FF;
+        const int vofs = bus->io().read16(0x12u + ref_bg * 4u) & 0x1FF;
+        const bool room_changed =
+            origin_x != g_icam.last_origin_x ||
+            origin_y != g_icam.last_origin_y;
+        if (g_icam.anchored && !room_changed) {
+            g_icam.cam_x += unwrap16(wrap512(hofs - g_icam.last_hofs));
+            g_icam.cam_y += unwrap16(wrap512(vofs - g_icam.last_vofs));
+            // A fast pan (>8px/frame) breaks the mod-16 unwrap; the EWRAM
+            // camera catches it within a metatile and re-anchors.
+            if (std::abs(g_icam.cam_x - ewram_cam_x) > 16 ||
+                std::abs(g_icam.cam_y - ewram_cam_y) > 16) {
+                g_icam.cam_x = ewram_cam_x;
+                g_icam.cam_y = ewram_cam_y;
+            }
+        } else {
+            g_icam.cam_x = ewram_cam_x;
+            g_icam.cam_y = ewram_cam_y;
+            g_icam.anchored = true;
+        }
+        g_icam.last_hofs = hofs;
+        g_icam.last_vofs = vofs;
+        g_icam.last_origin_x = origin_x;
+        g_icam.last_origin_y = origin_y;
+        g_state.camera_x = g_icam.cam_x;
+        g_state.camera_y = g_icam.cam_y;
+        g_icam.used_ewram = false;
+    }
     g_state.room_width = static_cast<int>(
         rd16(bus, kRoomControls + 0x1Eu));
     g_state.room_height = static_cast<int>(
@@ -278,6 +411,9 @@ void refresh_scanline(gba::GbaBus* bus, int screen_y) {
     g_state.hud_hide_flags = rd8(bus, kHud + 1u);
     g_state.message_active = (rd8(bus, kMessage) & 0x7Fu) != 0;
     g_state.cloud_overlay = is_hyrule_cloud_overlay(bus);
+    if (new_frame)
+        camtrace_frame(bus, scroll_x, scroll_y, origin_x, origin_y,
+                       shake_x, shake_y);
 }
 
 extern "C" int minish_tilemap_provider(int bg, int hardware_x, int screen_y,
