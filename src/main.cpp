@@ -78,6 +78,12 @@ int main(int argc, char** argv) {
     opts.resize_driven_view    = true;
     opts.extended_view_init    = &minish::install_extended_view;
     opts.launcher_expose_widescreen = false;
+    // Surface the adaptive (resize-driven) extended view as a launcher
+    // toggle so it can be enabled from the pre-boot UI. The view itself is
+    // already wired above (resize_driven_view + max_resize_view_width +
+    // extended_view_init); this only makes the "Adaptive view" checkbox
+    // visible. Faithful 240x160 remains the default until the box is ticked.
+    opts.launcher_expose_adaptive_view = true;
     opts.launcher_region    = "USA";
     opts.launcher_game_config = "game.toml";   // prefill ROM/BIOS from [rom]/[bios]
     // Save: game.toml [save] has no explicit path — the runtime derives
