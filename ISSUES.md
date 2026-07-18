@@ -15,6 +15,199 @@ crash on the path out of the house through the right door.
 
 ---
 
+## Adaptive extended-view audit (2026-07-17)
+
+### MC-WS-001: Wide compositor misses the realtime budget at large view widths — CANDIDATE MEETS BUDGET; LIVE VERIFY
+- **Observed:** The adaptive view is materially slower as the rendered width grows.
+  Compiler contention made the first live test worse, but a quieter-machine retest
+  still shows visible slowdown at the ultrawide/fullscreen size.
+- **Measured:** On the same outdoor save state, the first optimization pass reduced
+  renderer time from about 10.77 to 9.38 ms/frame at 373 pixels and from 13.79 to
+  11.21 ms/frame at 480 pixels. End-to-end time improved by about 5% and 14%,
+  respectively. Output hashes remained pixel-identical at 240, 373, and 480 pixels.
+- **Current finding:** This workload is integer tile/window/sprite composition, so
+  compiler "fast math" is unlikely to help. The useful HLE boundary is the renderer:
+  batch or cache repeated tile/attribute work, specialize native versus extension
+  spans, and avoid per-pixel guest callbacks and bus reads.
+- **Critical build finding:** The initial live `perf3` PPU object was an unoptimized
+  development build. Rebuilding the same candidate as Release reduced 480-wide
+  renderer cost from roughly 11.2 to 6.1 ms/frame. Production/release performance
+  must not be judged from an empty-`CMAKE_BUILD_TYPE` Ninja build.
+- **Latest candidate:** Resolving each output column's window mask once per scanline,
+  rather than repeating WIN0/WIN1/OBJ-window tests in every compositor stage, reduced
+  a paired Release run from about 6.06 to 5.26 ms of renderer time per 480-wide frame.
+  Total headless time fell from about 14.4 to 13.6 ms/frame, below the 16.74 ms GBA
+  frame period. Native-240 and wide-480 PNG hashes are unchanged.
+- **Next:** Confirm delivered 59.7 FPS in the live synchronized build and repeat on a
+  clean full-Release package. Profile BG/OBJ stages further only if gameplay scenes
+  with heavier sprites or effects still miss budget.
+
+### MC-WS-002: Camera motion exposes lines and waviness in the extended margins — HANDOFF READY
+- **Observed:** At wide sizes, moving through the overworld can reveal obstructing
+  lines in the extended area. At narrower sizes the same defect appears as subtle
+  waviness while walking. Reproduce from `roms/visual_outdoor.state` (also saved by
+  the tester in slot 9): enable adaptive view, make the window ultrawide, and walk
+  continuously up/down. The exterior door disappearing at distance was a separate
+  MC-WS-004 bug and is already fixed.
+- **Renderer findings:** The room tile and in-tile pixel phases agree: Minish writes the room
+  camera modulo 16 (plus shake) to the BG offsets, while the provider uses the same
+  camera and shake values. A deterministic 24-frame walking comparison found that
+  the native 240-pixel image equals the exact center of the 480-pixel render (the only
+  apparent row differences were HUD pieces intentionally relocated to the outer
+  corners). In both margins, every inspected 16-line block moved by the same camera
+  delta; no stale/split scanline appeared. BG scroll low bits stayed aligned through
+  16-pixel ring rotations and the Minish ring resolver's measured bias remained zero.
+  The raw compositor evidence therefore does **not** currently reproduce the visible
+  line; start downstream of `GbaPpu::render_scanline_wide` unless a better raw capture
+  contradicts this result.
+- **Presentation experiments ruled out by live testing:** adaptive-only SDL vsync,
+  linear filtering, whole-number nearest scaling with letterbox bars, moving the GBA
+  pacer wait from after presentation to immediately before it, and selecting SDL's
+  Direct3D 11 backend instead of the default legacy `direct3d` backend. The tester
+  still saw the same tearing/waviness. Direct3D 11 and OpenGL are both available on
+  the test machine, but backend selection should not be committed on this evidence.
+  These experiments were reverted; fixed-width extended view and Mega Man Zero remain
+  unchanged.
+- **Timing evidence:** A temporary trace around `SDL_RenderPresent` measured 273
+  adaptive frames with the normal GBA pacer plus vsync: mean 16.662 ms, median
+  16.763 ms, p95 24.676 ms, p99 27.137 ms, range 6.497–28.652 ms, with 45 intervals
+  over 20 ms. A controlled follow-up was similar with both clocks (mean 16.725 ms,
+  standard deviation 4.224 ms) and with the GBA pacer alone (mean 16.741 ms,
+  standard deviation 4.448 ms). Vsync alone delivered about 6.75 ms on this
+  high-refresh display and therefore cannot govern emulation speed. The jitter is a
+  lead, not yet proof: the trace records present-return timing rather than physical
+  scanout, and changing pacer placement did not improve the visible defect.
+- **Capture limitation / next experiment:** GDI/`gdigrab` captures of the accelerated
+  SDL window were black. This FFmpeg build exposes the Desktop Duplication API via
+  `ddagrab`; use it (or a short ShareX/OBS recording) to capture actual delivered
+  frames while replaying Up (`KEYINPUT=0x03BF`) from the outdoor state. Compare
+  consecutive captured frames for a horizontal old-frame/new-frame boundary. If the
+  boundary exists only in delivered frames, instrument the SDL upload/copy/present
+  phases and the Windows compositor path. If it is absent from a high-frame-rate
+  capture, investigate high-refresh cadence/temporal aliasing rather than the Minish
+  margin provider. Relevant code: `src/gba/gba_ppu.cpp` wide compositor,
+  `src/runtime/host_window.cpp` upload/presentation, `src/runtime/host_platform.cpp`
+  `FramePacer`, runtime present call sites, and Minish's
+  `src/minish_extended_view.cpp`. Preserve the opt-in gate and do not alter MMZ's
+  fixed-width behavior.
+- **▶ NEW EVIDENCE 2026-07-17 (Fable) — the defect is DISPLAY-CADENCE JUDDER
+  (59.7275 fps content on a 164 Hz display), NOT a compositor/margin bug. The
+  ddagrab capture step is no longer the critical path; the existing timing data
+  already proves it.** Confirmed the test display via `Win32_VideoController`:
+  **3440×1440 @ 164 Hz ultrawide, RTX 3080 Ti, VRR range 50–164 Hz** (G-Sync/
+  FreeSync-capable, and 59.7275 sits *inside* that range). The prior "high-refresh"
+  inference is now a hard number. The arithmetic closes the case:
+  - 164 Hz → 6.098 ms/refresh. Measured **mean present interval 16.662 ms** =
+    **2.73 refreshes/frame**; the ideal 164/59.7275 = **2.746**. The mean present
+    interval IS the display-vs-content refresh ratio — the tell-tale of a source
+    frame shown for a non-integer number of refreshes (2-3-2-3 pulldown judder).
+  - Measured min 6.497 ms = **1.07×** one refresh; max 28.652 ms ≈ **4.7×**; p95
+    24.676 ms = **4.05×**; p99 27.137 ms = **4.45×**. The present cadence quantizes
+    to integer refresh counts (mostly 2 or 3, occasionally 1 or 4).
+  - **Decisive:** the FramePacer can only ever wait *up to* its 16.742 ms deadline,
+    so it can NEVER produce a sub-16.742 ms frame interval. Intervals as low as
+    6.5 ms were measured → they can only come from **vsync releasing on a refresh
+    boundary**. This rules out render-time jitter and pins the sub-period intervals
+    on vsync quantization. (This also explains why moving the pacer wait, D3D11,
+    filtering, and integer scaling all failed — none of them change the fundamental
+    59.73-on-164 cadence mismatch.)
+  - **Why the wide view specifically:** the average scroll velocity is correct, but
+    each frame's on-screen dwell alternates 2↔3 refreshes, so the *instantaneous*
+    scroll velocity is uneven. On a narrow field this reads as subtle waviness; on
+    a wide ultrawide field there is far more smoothly-scrolling geometry, so the
+    uneven cadence becomes visible "lines"/shear during continuous walking. The raw
+    compositor being internally coherent per-frame (already established) is fully
+    consistent — the defect is *between* frames, in presentation cadence, not in any
+    single frame's content.
+  - **Why windowed matters:** the repro is a windowed ultrawide. In DWM-composited
+    windowed mode true scanout tearing normally can't reach the panel (DWM presents
+    whole frames); with NVIDIA independent-flip (MPO) promotion on a near-fullscreen
+    ultrawide it *can*, but either way the dominant artifact on this cadence is
+    judder. A ddagrab desktop capture would be DWM-confounded (whole composed frames)
+    and cannot observe independent-flip scanout, so it is a weaker discriminator than
+    the timing math above; deprioritized.
+  - **Adaptive vs fixed-width, in code:** `host_window.cpp:312` enables
+    `SDL_RENDERER_PRESENTVSYNC` ONLY for `resize_driven_view`; fixed-width/native
+    runs with vsync OFF. So the adaptive path runs the software FramePacer AND
+    hardware vsync in series (`runtime.cpp` present → `pacer->wait_for_next_frame`),
+    the double-clock that produces the quantized cadence. Fixed-width relies on the
+    pacer alone (DWM does the final compositing vsync at 164 Hz regardless, so it
+    also judders, but at native size it is far less perceptible).
+  - **ROOT (open) and FIX DIRECTION:** presenting 59.7275 fps onto a 164 Hz display
+    without a refresh-matched present path is the cause. The display supports VRR
+    across 50–164 Hz, so the *complete* fix is a **VRR-matched flip-model present at
+    59.7275 Hz** (DXGI flip-model swapchain, borderless/fullscreen, G-Sync engaged;
+    drop the software pacer to a safety ceiling and let VRR pace the present) — this
+    eliminates both judder and tearing because the panel refreshes exactly in step
+    with emulation. SDL2's default renderers do not expose flip-model + VRR, so this
+    needs a custom D3D11/DXGI present path or SDL3. Fallbacks: match the display to a
+    60 Hz mode during play (60/59.7275 = 1.0046 → ~1 duplicated frame per ~220,
+    near-imperceptible), or accept it as a display limitation. Choice is a UX call
+    (fullscreen-vs-windowed, depends on the user's G-Sync setting) — escalate to the
+    user before building. Do NOT re-attempt pacer-placement / backend / filtering
+    experiments; they cannot fix a cadence mismatch.
+- **▶ DELIVERED-CONTENT CAPTURE 2026-07-17 (Fable) — the composed content is
+  PROVEN clean during live motion; the split is display-level, not a compositor
+  bug.** Added session-independent capture instrumentation to the runtime:
+  `GBARECOMP_FORCE_DRAWABLE="WxH"` (forces the resize-driven wide render under the
+  SDL `dummy` video driver, no real window needed) + `GBARECOMP_FRAMEDUMP_DIR`
+  (per-present dump of the exact composed bytes handed to SDL = `live_fb`, via
+  `write_png`). Drove a deterministic hold-Up walk (`GBARECOMP_INPUT_REPLAY`) from
+  `visual_outdoor.state` (load frame 43485) at the ultrawide 3440×1440 aspect →
+  **382×160** composed frames (center 240 + 71px margins each), 180 frames dumped.
+  Analysis (`scratchpad/analyze_frames.py`: per-frame vertical cross-correlation of
+  center vs left/right margins + intra-frame tear-row scan):
+  - Stationary frames: `dy=0`, no tear.
+  - **Steady walking (frames 43507–43636, ~130 frames / 2.2 s):
+    `dy_center == dy_left == dy_right`** (all +1/+2 per frame; the +1/+2 alternation
+    is the 1.33 px/frame sub-pixel camera cadence), and intra-frame `tear_strength`
+    is 0 (occasional 1 = integer-correlation noise on a sub-pixel shift). **Margins
+    are locked to the center; zero content-level split.**
+  - The only flagged "anomaly" (43637–43677) is a **screen-transition fade-to-black**
+    (Link walks into a house doorway) — visually confirmed in a montage; the `dy`
+    saturation / "TEAR?" flags there are the correlator choking on a fading
+    low-contrast image, NOT a tear.
+  - **Caveat (honest):** this captures the COMPOSITOR output (`live_fb`), which is
+    what proves the content is clean. It does NOT and cannot reproduce scanout
+    tearing (a physical display event) — that only exists at the real accelerated
+    present. So this rules OUT a content/compositor/margin-provider bug and pins the
+    artifact on presentation (judder/tearing); the judder-vs-true-tearing split
+    still needs a real 60 Hz test or an in-engine present-cadence probe on the
+    accelerated path. Instrumentation kept behind env gates (inert by default).
+
+### MC-WS-003: Ground cloud/shadow effect stops at the native viewport — RESOLVED 2026-07-17
+- **Observed:** The moving cloud-like shading on the ground is present only across
+  the original 240-pixel view. Newly revealed world geometry outside that range does
+  not receive the effect.
+- **Cause:** Hyrule Field's `CloudOverlayManager` uses an intentionally repeating,
+  diagonally scrolling BG3 texture. The extended renderer's fail-closed policy
+  suppressed every unsupported ring-buffer layer in margins, including this one
+  authored repeat.
+- **Fix:** The provider protocol can now explicitly retain a wrapped tile entry. The
+  Minish adapter requests it only for the screen-block-30, char-block-1 alpha-blended
+  BG3 configuration used by the cloud manager. Other BG3 uses, menus, native 3:2,
+  and MMZ retain their existing policy. On a captured Hyrule Field frame, the
+  authentic 240-pixel center remained byte-identical while only both margins gained
+  cloud shading. Live `perf8` verification confirmed the clouds now continue cleanly.
+
+### MC-WS-004: Objects disappear while still visible in adaptive margins — RESOLVED 2026-07-17
+- **Observed:** At a wide view, the green exterior door on the Hyrule Field house
+  disappears when Link moves far enough away even though the house remains visible.
+- **Cause:** The door entity remained alive and marked drawable. The later ARM sprite
+  writer rejected each OAM piece at its own native `x >= 240` comparison. Minish Cap
+  copies that renderer from ROM `0x080B291C` to live IWRAM `0x03006690`, so changing
+  only the ROM-side visibility helpers could not preserve the piece.
+- **Fix:** Exact reviewed ALU-immediate chokepoints now support ARM as well as THUMB
+  and code-copy addresses. Adaptive Minish Cap widens the live sprite-piece boundary
+  by the active right margin, then unwraps the 9-bit OAM X coordinate against live
+  entity positions. The lookup is cached once per OAM entry per frame. Native mode,
+  vertical clipping, fixed-width MMZ, and games without an explicit hook are unchanged.
+- **Verified:** On the saved outdoor path, OAM tile `0x7980` previously disappeared
+  after X=228. It now remains emitted at X=240 and X=252, and live `perf23` testing
+  confirmed that the exterior door no longer vanishes.
+- **Next:** Audit the less common `CheckRectOnScreen` manager helper for symmetric
+  margin coverage as new object types are exercised.
+
 ## High priority
 
 ### MC-HP-000: Function-finder relies on manual hints; cheap discovery heuristics not implemented
