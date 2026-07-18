@@ -25244,6 +25244,14 @@ note = "Adaptive view: move CheckRegionOnScreen's right viewport edge"
 addr = 0x080562E8
 note = "Adaptive view: widen CheckRegionOnScreen's comparison span"
 
+[[alu_immediate_override]]
+addr = 0x080B291C
+note = "Adaptive view: widen the ARM sprite-piece right-edge clip"
+
+[[alu_immediate_override]]
+addr = 0x03006690
+note = "Adaptive view: live IWRAM copy of the ARM sprite-piece right-edge clip"
+
 [[extra_func]]
 addr = 0x08056300
 mode = "thumb"

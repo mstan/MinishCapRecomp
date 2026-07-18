@@ -72,19 +72,23 @@ crash on the path out of the house through the right door.
   authentic 240-pixel center remained byte-identical while only both margins gained
   cloud shading. Live `perf8` verification confirmed the clouds now continue cleanly.
 
-### MC-WS-004: Objects disappear while still visible in adaptive margins — CANDIDATE
+### MC-WS-004: Objects disappear while still visible in adaptive margins — RESOLVED 2026-07-17
 - **Observed:** At a wide view, the green exterior door on the Hyrule Field house
   disappears when Link moves far enough away even though the house remains visible.
-- **Cause:** This is guest-side culling, not an OAM/compositor omission.
-  `HouseDoorExterior` creates and deletes its door through `CheckRegionOnScreen`, whose
-  horizontal bounds hardcode the native 240-pixel viewport. `CheckOnScreen` has the
-  same native-width assumption for other entities.
-- **Candidate:** Exact reviewed immediate/literal chokepoints widen those two helpers
-  by the active left/right margins only while adaptive view is expanded. Their native
-  constants, vertical culling, fixed-width mode, and MMZ behavior remain unchanged.
-- **Next:** Load the outdoor state at maximum width and verify the door remains drawn
-  while traversing both sides of the adaptive viewport; then audit the less common
-  `CheckRectOnScreen` manager helper for symmetric-margin coverage.
+- **Cause:** The door entity remained alive and marked drawable. The later ARM sprite
+  writer rejected each OAM piece at its own native `x >= 240` comparison. Minish Cap
+  copies that renderer from ROM `0x080B291C` to live IWRAM `0x03006690`, so changing
+  only the ROM-side visibility helpers could not preserve the piece.
+- **Fix:** Exact reviewed ALU-immediate chokepoints now support ARM as well as THUMB
+  and code-copy addresses. Adaptive Minish Cap widens the live sprite-piece boundary
+  by the active right margin, then unwraps the 9-bit OAM X coordinate against live
+  entity positions. The lookup is cached once per OAM entry per frame. Native mode,
+  vertical clipping, fixed-width MMZ, and games without an explicit hook are unchanged.
+- **Verified:** On the saved outdoor path, OAM tile `0x7980` previously disappeared
+  after X=228. It now remains emitted at X=240 and X=252, and live `perf23` testing
+  confirmed that the exterior door no longer vanishes.
+- **Next:** Audit the less common `CheckRectOnScreen` manager helper for symmetric
+  margin coverage as new object types are exercised.
 
 ## High priority
 

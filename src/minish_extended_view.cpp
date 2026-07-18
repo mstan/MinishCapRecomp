@@ -1,5 +1,6 @@
 #include "minish_extended_view.h"
 
+#include <array>
 #include <cstdint>
 #include <cstdio>
 
@@ -27,9 +28,13 @@ constexpr std::uint32_t kMessage = 0x02000050u;
 constexpr std::uint32_t kHud = 0x0200AF00u;
 constexpr std::uint32_t kRoomControls = 0x03000BF0u;
 constexpr std::uint32_t kScreen = 0x03000F50u;
+constexpr std::uint32_t kPlayerEntity = 0x03001160u;
+constexpr std::uint32_t kAuxPlayerEntities = 0x030011E8u;
+constexpr std::uint32_t kEntities = 0x030015A0u;
 constexpr int kFullMapStride = 128;
 constexpr int kHudElementsOffset = 0x34;
 constexpr int kHudElementSize = 0x20;
+constexpr int kEntitySize = 0x88;
 
 struct ScanlineState {
     gba::GbaBus* bus = nullptr;
@@ -37,6 +42,8 @@ struct ScanlineState {
     std::uint32_t full_map[4]{};
     int camera_x = 0;
     int camera_y = 0;
+    int ring_bias_x = 0;
+    int ring_bias_y = 0;
     int room_width = 0;
     int room_height = 0;
     std::uint8_t hud_hide_flags = 0;
@@ -46,6 +53,20 @@ struct ScanlineState {
 
 ScanlineState g_state;
 gba::GbaBus* g_bus = nullptr;
+int g_ring_bias_x = 0;
+int g_ring_bias_y = 0;
+
+struct ObjXCacheEntry {
+    std::uint16_t attr0 = 0;
+    std::uint16_t attr1 = 0;
+    std::uint16_t attr2 = 0;
+    int out_x = 0;
+    int action = 0;
+    std::uint32_t generation = 0;
+};
+
+std::array<ObjXCacheEntry, 128> g_obj_x_cache{};
+std::uint32_t g_obj_x_cache_generation = 1;
 
 // Horizontal visibility helpers in the original game use the native 240px
 // viewport as an immediate/literal. These exact sites retain their original
@@ -67,6 +88,11 @@ extern "C" int minish_view_alu_immediate(std::uint32_t pc,
         case 0x080562E8u:  // CheckRegionOnScreen: total comparison span.
             if (original != 0xF0u) return 0;
             *out_value = original + g_ws_extra_left + g_ws_extra_right;
+            return 1;
+        case 0x080B291Cu:  // ROM source of sub_080B2874's OBJ clip.
+        case 0x03006690u:  // Live IWRAM copy of that ARM instruction.
+            if (original != 0xF0u) return 0;
+            *out_value = original + g_ws_extra_right;
             return 1;
         default:
             return 0;
@@ -129,8 +155,95 @@ bool is_hyrule_cloud_overlay(gba::GbaBus* bus) {
            (blend_control & 0x00C8u) == 0x0048u;
 }
 
+std::uint16_t hardware_ring_entry(gba::GbaBus* bus, int bg,
+                                  int hardware_x, int screen_y) {
+    const std::uint16_t bgcnt = bus->io().read16(0x08u + bg * 2u);
+    const int hofs = bus->io().read16(0x10u + bg * 4u) & 0x1FFu;
+    const int vofs = bus->io().read16(0x12u + bg * 4u) & 0x1FFu;
+    const int width_tiles = (bgcnt & 0x4000u) ? 64 : 32;
+    const int height_tiles = (bgcnt & 0x8000u) ? 64 : 32;
+    const int tile_x = ((hardware_x + hofs) & (width_tiles * 8 - 1)) >> 3;
+    const int tile_y = ((screen_y + vofs) & (height_tiles * 8 - 1)) >> 3;
+    const int block = (tile_x >> 5) +
+        (tile_y >> 5) * (width_tiles >> 5);
+    const std::uint32_t offset = ((bgcnt >> 8) & 0x1Fu) * 0x800u +
+        static_cast<std::uint32_t>(block) * 0x800u +
+        static_cast<std::uint32_t>(
+            ((tile_y & 31) * 32 + (tile_x & 31)) * 2);
+    const std::uint8_t* vram = bus->vram_ptr();
+    return static_cast<std::uint16_t>(vram[offset]) |
+        static_cast<std::uint16_t>(vram[offset + 1u] << 8);
+}
+
+void resolve_ring_bias(gba::GbaBus* bus) {
+    // UpdateScrollVram rotates its 16px-metatile ring one VBlank behind the
+    // new HOFS/VOFS phase. Rather than predicting that transient from CPU
+    // timing, match a small set of authentic ring entries against the full
+    // room map once per frame. This selects the exact block represented by
+    // the latched PPU state and costs far less than one scanline's pixels.
+    constexpr int biases[] = {0, -16, 16};
+    constexpr int probes_x[] = {0, 47, 95, 143, 191, 239};
+    constexpr int probes_y[] = {0, 31, 63, 95, 127, 159};
+    int best_score = -1;
+    int zero_score = -1;
+    int best_x = 0;
+    int best_y = 0;
+    for (int bias_x : biases) {
+        for (int bias_y : biases) {
+            int score = 0;
+            for (int bg = 0; bg < 4; ++bg) {
+                const std::uint32_t full_map = g_state.full_map[bg];
+                if (!full_map) continue;
+                for (int screen_y : probes_y) {
+                    const int room_y = g_state.camera_y + screen_y + bias_y;
+                    if (room_y < 0 || room_y >= g_state.room_height) continue;
+                    for (int hardware_x : probes_x) {
+                        const int room_x =
+                            g_state.camera_x + hardware_x + bias_x;
+                        if (room_x < 0 || room_x >= g_state.room_width)
+                            continue;
+                        const std::uint32_t index = static_cast<std::uint32_t>(
+                            (room_y >> 3) * kFullMapStride + (room_x >> 3));
+                        if (rd16(bus, full_map + index * 2u) ==
+                            hardware_ring_entry(
+                                bus, bg, hardware_x, screen_y)) {
+                            ++score;
+                        }
+                    }
+                }
+            }
+            if (bias_x == 0 && bias_y == 0) zero_score = score;
+            if (score > best_score) {
+                best_score = score;
+                best_x = bias_x;
+                best_y = bias_y;
+            }
+        }
+    }
+    // Repeated/transparent scenery can produce weak accidental matches.
+    // Require a clear multi-probe win before departing from the nominal map.
+    const bool confident = best_score >= zero_score + 8;
+    g_ring_bias_x = confident ? best_x : 0;
+    g_ring_bias_y = confident ? best_y : 0;
+}
+
 void refresh_scanline(gba::GbaBus* bus, int screen_y) {
     if (g_state.bus == bus && g_state.screen_y == screen_y) return;
+
+    const bool new_frame = g_state.bus != bus || screen_y <= g_state.screen_y;
+    if (!new_frame) {
+        // Guest gameplay updates run during visible scanlines, but the GBA's
+        // displayed ring/scroll registers remain latched until VBlank. Keep
+        // the authored-margin camera and metadata latched for the same whole
+        // frame instead of sampling changing EWRAM on every scanline.
+        g_state.screen_y = screen_y;
+        return;
+    }
+
+    if (++g_obj_x_cache_generation == 0) {
+        g_obj_x_cache = {};
+        g_obj_x_cache_generation = 1;
+    }
 
     g_state = {};
     g_state.bus = bus;
@@ -147,16 +260,21 @@ void refresh_scanline(gba::GbaBus* bus, int screen_y) {
         rd16(bus, kRoomControls + 0x0Au));
     const int scroll_y = static_cast<std::int16_t>(
         rd16(bus, kRoomControls + 0x0Cu));
+    const int base_camera_x = scroll_x - origin_x;
+    const int base_camera_y = scroll_y - origin_y;
     const int shake_x = static_cast<std::int8_t>(
         rd8(bus, kRoomControls + 0x24u));
     const int shake_y = static_cast<std::int8_t>(
         rd8(bus, kRoomControls + 0x25u));
-    g_state.camera_x = scroll_x - origin_x + shake_x;
-    g_state.camera_y = scroll_y - origin_y + shake_y;
+    g_state.camera_x = base_camera_x + shake_x;
+    g_state.camera_y = base_camera_y + shake_y;
     g_state.room_width = static_cast<int>(
         rd16(bus, kRoomControls + 0x1Eu));
     g_state.room_height = static_cast<int>(
         rd16(bus, kRoomControls + 0x20u));
+    if (new_frame) resolve_ring_bias(bus);
+    g_state.ring_bias_x = g_ring_bias_x;
+    g_state.ring_bias_y = g_ring_bias_y;
     g_state.hud_hide_flags = rd8(bus, kHud + 1u);
     g_state.message_active = (rd8(bus, kMessage) & 0x7Fu) != 0;
     g_state.cloud_overlay = is_hyrule_cloud_overlay(bus);
@@ -185,8 +303,8 @@ extern "C" int minish_tilemap_provider(int bg, int hardware_x, int screen_y,
         return gba::kWsTilemapUnavailable;
     }
 
-    const int room_x = g_state.camera_x + hardware_x;
-    const int room_y = g_state.camera_y + screen_y;
+    const int room_x = g_state.camera_x + hardware_x + g_state.ring_bias_x;
+    const int room_y = g_state.camera_y + screen_y + g_state.ring_bias_y;
     if (room_x < 0 || room_y < 0 ||
         room_x >= g_state.room_width || room_y >= g_state.room_height) {
         return gba::kWsTilemapUnavailable;
@@ -259,11 +377,69 @@ int distance(int a, int b) {
     return d < 0 ? -d : d;
 }
 
-extern "C" int minish_hud_obj_x_provider(int, std::uint16_t attr0,
+bool match_world_entity_x(gba::GbaBus* bus, std::uint32_t entity,
+                          int raw_x, int raw_y, int* best_score,
+                          int* best_x) {
+    const unsigned kind = rd8(bus, entity + 0x08u);
+    const unsigned flags = rd8(bus, entity + 0x10u);
+    const unsigned draw = rd8(bus, entity + 0x18u) & 3u;
+    if (kind == 0 || kind > 9 || (flags & 0x10u) != 0 || draw == 0)
+        return false;
+
+    const int entity_x = static_cast<std::int16_t>(rd16(bus, entity + 0x2Eu));
+    const int entity_y = static_cast<std::int16_t>(rd16(bus, entity + 0x32u));
+    const int entity_z = static_cast<std::int16_t>(rd16(bus, entity + 0x36u));
+    const int scroll_x = static_cast<std::int16_t>(
+        rd16(bus, kRoomControls + 0x0Au));
+    const int scroll_y = static_cast<std::int16_t>(
+        rd16(bus, kRoomControls + 0x0Cu));
+    const int offset_x = static_cast<std::int8_t>(rd8(bus, entity + 0x62u));
+    const int offset_y = static_cast<std::int8_t>(rd8(bus, entity + 0x63u));
+    const int expected_x = entity_x - scroll_x + offset_x;
+    const int expected_y = entity_y - scroll_y - entity_z + offset_y;
+    if (distance(raw_y, expected_y) > 64) return false;
+
+    const int candidates[] = {raw_x, raw_x - 512};
+    bool matched = false;
+    for (int candidate : candidates) {
+        const int dx = distance(candidate, expected_x);
+        if (dx > 64) continue;
+        const int score = dx + distance(raw_y, expected_y);
+        if (score < *best_score) {
+            *best_score = score;
+            *best_x = candidate;
+            matched = true;
+        }
+    }
+    return matched;
+}
+
+extern "C" int minish_hud_obj_x_provider(int oam_index, std::uint16_t attr0,
                                           std::uint16_t attr1,
                                           std::uint16_t attr2, int* out_x) {
     gba::GbaBus* bus = active_game_bus();
     if (!bus || !out_x || (rd8(bus, kMessage) & 0x7Fu) != 0) return 0;
+
+    ObjXCacheEntry* cache = oam_index >= 0 && oam_index < 128
+        ? &g_obj_x_cache[static_cast<std::size_t>(oam_index)] : nullptr;
+    if (cache && cache->generation == g_obj_x_cache_generation &&
+        cache->attr0 == attr0 && cache->attr1 == attr1 &&
+        cache->attr2 == attr2) {
+        if (cache->action > 0) *out_x = cache->out_x;
+        return cache->action;
+    }
+    auto finish = [&](int action, int x) {
+        if (action > 0) *out_x = x;
+        if (cache) {
+            cache->attr0 = attr0;
+            cache->attr1 = attr1;
+            cache->attr2 = attr2;
+            cache->out_x = x;
+            cache->action = action;
+            cache->generation = g_obj_x_cache_generation;
+        }
+        return action;
+    };
 
     const int raw_x = attr1 & 0x1FFu;
     const int raw_y = signed_oam_y(attr0);
@@ -298,19 +474,48 @@ extern "C" int minish_hud_obj_x_provider(int, std::uint16_t attr0,
             continue;
         }
 
-        *out_x = raw_x + (right_hud
+        const int x = raw_x + (right_hud
             ? static_cast<int>(g_ws_extra_right)
             : -static_cast<int>(g_ws_extra_left));
-        return 1;
+        return finish(1, x);
     }
-    return 0;
+
+    // World OBJ X is stored as unsigned 9-bit OAM. Native hardware interprets
+    // 256..511 as off-left, which aliases authored objects that are genuinely
+    // at X >= 256 in the expanded right margin. Match OAM pieces to live world
+    // entities and choose the signed/unwrapped coordinate nearest the entity's
+    // actual camera-relative anchor. This also preserves negative left-margin
+    // pieces without changing ordinary 0..255 sprites.
+    int best_score = 0x7FFFFFFF;
+    int best_x = raw_x;
+    for (int index = 0; index < 8; ++index) {
+        const std::uint32_t entity = index == 0
+            ? kPlayerEntity
+            : kAuxPlayerEntities + static_cast<std::uint32_t>(
+                (index - 1) * kEntitySize);
+        match_world_entity_x(
+            bus, entity, raw_x, raw_y, &best_score, &best_x);
+    }
+    for (int index = 0; index < 72; ++index) {
+        match_world_entity_x(
+            bus, kEntities + static_cast<std::uint32_t>(index * kEntitySize),
+            raw_x, raw_y, &best_score, &best_x);
+    }
+    if (best_score != 0x7FFFFFFF) {
+        return finish(1, best_x);
+    }
+    return finish(0, 0);
 }
 
 }  // namespace
 
 void install_extended_view(std::uint32_t, std::uint32_t) {
     g_state = {};
+    g_ring_bias_x = 0;
+    g_ring_bias_y = 0;
     g_bus = nullptr;
+    g_obj_x_cache = {};
+    g_obj_x_cache_generation = 1;
     gba::g_ws_tilemap_provider = &minish_tilemap_provider;
     gba::g_ws_authored_margin_layers = 1;
     gba::g_ws_bg_x_provider = &minish_hud_bg_x_provider;
