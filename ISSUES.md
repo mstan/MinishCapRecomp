@@ -174,6 +174,29 @@ crash on the path out of the house through the right door.
     artifact on presentation (judder/tearing); the judder-vs-true-tearing split
     still needs a real 60 Hz test or an in-engine present-cadence probe on the
     accelerated path. Instrumentation kept behind env gates (inert by default).
+- **▶ PRESENT-CADENCE PROBE LANDED 2026-07-17 (Fable) — awaiting a real-display
+  run.** `gbarecomp/src/runtime/host_window.cpp` now keeps an **always-on ring**
+  (16384 entries, Release too, ~24 B/present) recording every `SDL_RenderPresent`:
+  wall time blocked inside the call (`block_us`), entry-to-entry gap (`gap_us`),
+  and the **DWM composition refresh counter** (`cRefresh`, queried per present via
+  `DwmGetCompositionTimingInfo` — an always-on scanout-side clock, no arming).
+  `GBARECOMP_PRESENT_CADENCE=1` enables a stderr summary every ~6 s and a full CSV
+  dump at window close (default `./_present_cadence.csv`, override with
+  `GBARECOMP_PRESENT_CADENCE_DUMP=path`). The window's display index + mode
+  (geometry, nominal Hz) are logged at open and on every fullscreen toggle.
+  `gbarecomp/tools/analyze_present_cadence.py <csv>` renders the verdicts:
+  - `block_us` ≈ 0 on ~every present ⇒ **vsync is not blocking** (tear-prone);
+    p50 near a refresh period ⇒ vsync blocks.
+  - `rdelta` (per-present cRefresh delta) histogram: `1,1,1…` at ~16.74 ms gaps on
+    the 164 Hz panel ⇒ **VRR engaged** (cadence fixed); `2/3` alternation ⇒
+    pulldown judder confirmed; `0` rows ⇒ presents replaced within one refresh.
+  - Windowed vs fullscreen segments are analyzed separately (`fullscreen` column).
+  Run recipe (real display, accelerated, user-launched): set `GBARECOMP_WS_WIP=1`,
+  `GBARECOMP_RESIZE_VIEW=1`, `GBARECOMP_PRESENT_CADENCE=1`; launch windowed
+  (no `--tcp`, no `--no-window`), load slot 9 / `visual_outdoor.state`, walk
+  up/down ~30 s windowed-maximized, then Alt+Enter fullscreen ~30 s, quit; feed
+  the CSV to the analyzer. Compare the ultrawide (VRR 50–164 Hz) and the 60 Hz
+  Acer.
 
 ### MC-WS-003: Ground cloud/shadow effect stops at the native viewport — RESOLVED 2026-07-17
 - **Observed:** The moving cloud-like shading on the ground is present only across
