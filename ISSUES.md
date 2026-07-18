@@ -42,20 +42,54 @@ crash on the path out of the house through the right door.
   clean full-Release package. Profile BG/OBJ stages further only if gameplay scenes
   with heavier sprites or effects still miss budget.
 
-### MC-WS-002: Camera motion exposes lines and waviness in the extended margins — IN PROGRESS
+### MC-WS-002: Camera motion exposes lines and waviness in the extended margins — HANDOFF READY
 - **Observed:** At wide sizes, moving through the overworld can reveal obstructing
   lines in the extended area. At narrower sizes the same defect appears as subtle
-  waviness while walking.
-- **Finding:** The room tile and in-tile pixel phases agree: Minish writes the room
+  waviness while walking. Reproduce from `roms/visual_outdoor.state` (also saved by
+  the tester in slot 9): enable adaptive view, make the window ultrawide, and walk
+  continuously up/down. The exterior door disappearing at distance was a separate
+  MC-WS-004 bug and is already fixed.
+- **Renderer findings:** The room tile and in-tile pixel phases agree: Minish writes the room
   camera modulo 16 (plus shake) to the BG offsets, while the provider uses the same
-  camera and shake values. Neither adaptive-only synchronized presentation nor a live
-  linear-filtered presentation cleared the artifact. That rules out both ordinary
-  unsynchronized presentation and fractional nearest-neighbor pixel crawl as the sole
-  cause.
-- **Next:** Capture consecutive raw compositor frames from the outdoor state while
-  walking and inspect fixed native-boundary/tile-boundary rows and columns. If the raw
-  frames are clean, inspect delivered-frame pacing; if they contain the line, isolate
-  the first BG/OBJ layer that introduces it. Keep fixed-width/MMZ presentation unchanged.
+  camera and shake values. A deterministic 24-frame walking comparison found that
+  the native 240-pixel image equals the exact center of the 480-pixel render (the only
+  apparent row differences were HUD pieces intentionally relocated to the outer
+  corners). In both margins, every inspected 16-line block moved by the same camera
+  delta; no stale/split scanline appeared. BG scroll low bits stayed aligned through
+  16-pixel ring rotations and the Minish ring resolver's measured bias remained zero.
+  The raw compositor evidence therefore does **not** currently reproduce the visible
+  line; start downstream of `GbaPpu::render_scanline_wide` unless a better raw capture
+  contradicts this result.
+- **Presentation experiments ruled out by live testing:** adaptive-only SDL vsync,
+  linear filtering, whole-number nearest scaling with letterbox bars, moving the GBA
+  pacer wait from after presentation to immediately before it, and selecting SDL's
+  Direct3D 11 backend instead of the default legacy `direct3d` backend. The tester
+  still saw the same tearing/waviness. Direct3D 11 and OpenGL are both available on
+  the test machine, but backend selection should not be committed on this evidence.
+  These experiments were reverted; fixed-width extended view and Mega Man Zero remain
+  unchanged.
+- **Timing evidence:** A temporary trace around `SDL_RenderPresent` measured 273
+  adaptive frames with the normal GBA pacer plus vsync: mean 16.662 ms, median
+  16.763 ms, p95 24.676 ms, p99 27.137 ms, range 6.497–28.652 ms, with 45 intervals
+  over 20 ms. A controlled follow-up was similar with both clocks (mean 16.725 ms,
+  standard deviation 4.224 ms) and with the GBA pacer alone (mean 16.741 ms,
+  standard deviation 4.448 ms). Vsync alone delivered about 6.75 ms on this
+  high-refresh display and therefore cannot govern emulation speed. The jitter is a
+  lead, not yet proof: the trace records present-return timing rather than physical
+  scanout, and changing pacer placement did not improve the visible defect.
+- **Capture limitation / next experiment:** GDI/`gdigrab` captures of the accelerated
+  SDL window were black. This FFmpeg build exposes the Desktop Duplication API via
+  `ddagrab`; use it (or a short ShareX/OBS recording) to capture actual delivered
+  frames while replaying Up (`KEYINPUT=0x03BF`) from the outdoor state. Compare
+  consecutive captured frames for a horizontal old-frame/new-frame boundary. If the
+  boundary exists only in delivered frames, instrument the SDL upload/copy/present
+  phases and the Windows compositor path. If it is absent from a high-frame-rate
+  capture, investigate high-refresh cadence/temporal aliasing rather than the Minish
+  margin provider. Relevant code: `src/gba/gba_ppu.cpp` wide compositor,
+  `src/runtime/host_window.cpp` upload/presentation, `src/runtime/host_platform.cpp`
+  `FramePacer`, runtime present call sites, and Minish's
+  `src/minish_extended_view.cpp`. Preserve the opt-in gate and do not alter MMZ's
+  fixed-width behavior.
 
 ### MC-WS-003: Ground cloud/shadow effect stops at the native viewport — RESOLVED 2026-07-17
 - **Observed:** The moving cloud-like shading on the ground is present only across
