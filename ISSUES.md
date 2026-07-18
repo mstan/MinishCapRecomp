@@ -90,6 +90,90 @@ crash on the path out of the house through the right door.
   `FramePacer`, runtime present call sites, and Minish's
   `src/minish_extended_view.cpp`. Preserve the opt-in gate and do not alter MMZ's
   fixed-width behavior.
+- **▶ NEW EVIDENCE 2026-07-17 (Fable) — the defect is DISPLAY-CADENCE JUDDER
+  (59.7275 fps content on a 164 Hz display), NOT a compositor/margin bug. The
+  ddagrab capture step is no longer the critical path; the existing timing data
+  already proves it.** Confirmed the test display via `Win32_VideoController`:
+  **3440×1440 @ 164 Hz ultrawide, RTX 3080 Ti, VRR range 50–164 Hz** (G-Sync/
+  FreeSync-capable, and 59.7275 sits *inside* that range). The prior "high-refresh"
+  inference is now a hard number. The arithmetic closes the case:
+  - 164 Hz → 6.098 ms/refresh. Measured **mean present interval 16.662 ms** =
+    **2.73 refreshes/frame**; the ideal 164/59.7275 = **2.746**. The mean present
+    interval IS the display-vs-content refresh ratio — the tell-tale of a source
+    frame shown for a non-integer number of refreshes (2-3-2-3 pulldown judder).
+  - Measured min 6.497 ms = **1.07×** one refresh; max 28.652 ms ≈ **4.7×**; p95
+    24.676 ms = **4.05×**; p99 27.137 ms = **4.45×**. The present cadence quantizes
+    to integer refresh counts (mostly 2 or 3, occasionally 1 or 4).
+  - **Decisive:** the FramePacer can only ever wait *up to* its 16.742 ms deadline,
+    so it can NEVER produce a sub-16.742 ms frame interval. Intervals as low as
+    6.5 ms were measured → they can only come from **vsync releasing on a refresh
+    boundary**. This rules out render-time jitter and pins the sub-period intervals
+    on vsync quantization. (This also explains why moving the pacer wait, D3D11,
+    filtering, and integer scaling all failed — none of them change the fundamental
+    59.73-on-164 cadence mismatch.)
+  - **Why the wide view specifically:** the average scroll velocity is correct, but
+    each frame's on-screen dwell alternates 2↔3 refreshes, so the *instantaneous*
+    scroll velocity is uneven. On a narrow field this reads as subtle waviness; on
+    a wide ultrawide field there is far more smoothly-scrolling geometry, so the
+    uneven cadence becomes visible "lines"/shear during continuous walking. The raw
+    compositor being internally coherent per-frame (already established) is fully
+    consistent — the defect is *between* frames, in presentation cadence, not in any
+    single frame's content.
+  - **Why windowed matters:** the repro is a windowed ultrawide. In DWM-composited
+    windowed mode true scanout tearing normally can't reach the panel (DWM presents
+    whole frames); with NVIDIA independent-flip (MPO) promotion on a near-fullscreen
+    ultrawide it *can*, but either way the dominant artifact on this cadence is
+    judder. A ddagrab desktop capture would be DWM-confounded (whole composed frames)
+    and cannot observe independent-flip scanout, so it is a weaker discriminator than
+    the timing math above; deprioritized.
+  - **Adaptive vs fixed-width, in code:** `host_window.cpp:312` enables
+    `SDL_RENDERER_PRESENTVSYNC` ONLY for `resize_driven_view`; fixed-width/native
+    runs with vsync OFF. So the adaptive path runs the software FramePacer AND
+    hardware vsync in series (`runtime.cpp` present → `pacer->wait_for_next_frame`),
+    the double-clock that produces the quantized cadence. Fixed-width relies on the
+    pacer alone (DWM does the final compositing vsync at 164 Hz regardless, so it
+    also judders, but at native size it is far less perceptible).
+  - **ROOT (open) and FIX DIRECTION:** presenting 59.7275 fps onto a 164 Hz display
+    without a refresh-matched present path is the cause. The display supports VRR
+    across 50–164 Hz, so the *complete* fix is a **VRR-matched flip-model present at
+    59.7275 Hz** (DXGI flip-model swapchain, borderless/fullscreen, G-Sync engaged;
+    drop the software pacer to a safety ceiling and let VRR pace the present) — this
+    eliminates both judder and tearing because the panel refreshes exactly in step
+    with emulation. SDL2's default renderers do not expose flip-model + VRR, so this
+    needs a custom D3D11/DXGI present path or SDL3. Fallbacks: match the display to a
+    60 Hz mode during play (60/59.7275 = 1.0046 → ~1 duplicated frame per ~220,
+    near-imperceptible), or accept it as a display limitation. Choice is a UX call
+    (fullscreen-vs-windowed, depends on the user's G-Sync setting) — escalate to the
+    user before building. Do NOT re-attempt pacer-placement / backend / filtering
+    experiments; they cannot fix a cadence mismatch.
+- **▶ DELIVERED-CONTENT CAPTURE 2026-07-17 (Fable) — the composed content is
+  PROVEN clean during live motion; the split is display-level, not a compositor
+  bug.** Added session-independent capture instrumentation to the runtime:
+  `GBARECOMP_FORCE_DRAWABLE="WxH"` (forces the resize-driven wide render under the
+  SDL `dummy` video driver, no real window needed) + `GBARECOMP_FRAMEDUMP_DIR`
+  (per-present dump of the exact composed bytes handed to SDL = `live_fb`, via
+  `write_png`). Drove a deterministic hold-Up walk (`GBARECOMP_INPUT_REPLAY`) from
+  `visual_outdoor.state` (load frame 43485) at the ultrawide 3440×1440 aspect →
+  **382×160** composed frames (center 240 + 71px margins each), 180 frames dumped.
+  Analysis (`scratchpad/analyze_frames.py`: per-frame vertical cross-correlation of
+  center vs left/right margins + intra-frame tear-row scan):
+  - Stationary frames: `dy=0`, no tear.
+  - **Steady walking (frames 43507–43636, ~130 frames / 2.2 s):
+    `dy_center == dy_left == dy_right`** (all +1/+2 per frame; the +1/+2 alternation
+    is the 1.33 px/frame sub-pixel camera cadence), and intra-frame `tear_strength`
+    is 0 (occasional 1 = integer-correlation noise on a sub-pixel shift). **Margins
+    are locked to the center; zero content-level split.**
+  - The only flagged "anomaly" (43637–43677) is a **screen-transition fade-to-black**
+    (Link walks into a house doorway) — visually confirmed in a montage; the `dy`
+    saturation / "TEAR?" flags there are the correlator choking on a fading
+    low-contrast image, NOT a tear.
+  - **Caveat (honest):** this captures the COMPOSITOR output (`live_fb`), which is
+    what proves the content is clean. It does NOT and cannot reproduce scanout
+    tearing (a physical display event) — that only exists at the real accelerated
+    present. So this rules OUT a content/compositor/margin-provider bug and pins the
+    artifact on presentation (judder/tearing); the judder-vs-true-tearing split
+    still needs a real 60 Hz test or an in-engine present-cadence probe on the
+    accelerated path. Instrumentation kept behind env gates (inert by default).
 
 ### MC-WS-003: Ground cloud/shadow effect stops at the native viewport — RESOLVED 2026-07-17
 - **Observed:** The moving cloud-like shading on the ground is present only across
