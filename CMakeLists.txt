@@ -16,6 +16,11 @@ if(NOT EXISTS "${GBARECOMP_ROOT}/CMakeLists.txt")
         "GBARECOMP_ROOT does not point to a gbarecomp checkout: ${GBARECOMP_ROOT}")
 endif()
 
+# Expose recomp-ui's shared in-game model to the platform runtime. The game
+# still owns which capabilities it advertises through RunOptions.
+set(GBARECOMP_RUNTIME_UI_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/recomp-ui"
+    CACHE PATH "recomp-ui root used by the live GBA runtime adapter")
+
 # Pull in the platform core targets. This makes gbarecomp_runtime,
 # gbarecomp_debug, gbarecomp_armv4t available as link targets.
 add_subdirectory("${GBARECOMP_ROOT}" gbarecomp_build EXCLUDE_FROM_ALL)
