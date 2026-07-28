@@ -4,6 +4,7 @@ project(MinishCapRecomp C CXX)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+include(CTest)
 
 # Path to the platform core, consumed as a git submodule (junctioned locally
 # to the shared checkout). Override with -DGBARECOMP_ROOT=... for a different
@@ -20,6 +21,11 @@ endif()
 # still owns which capabilities it advertises through RunOptions.
 set(GBARECOMP_RUNTIME_UI_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/recomp-ui"
     CACHE PATH "recomp-ui root used by the live GBA runtime adapter")
+
+# Minish Cap is the first GBA title to expose game-owned enhancements through
+# the package catalog. This also opens recomp-ui's otherwise inert Mods gate.
+set(GBARECOMP_ENABLE_MODS ON CACHE BOOL
+    "Enable Minish Cap's built-in mod catalog and GBA mod packages" FORCE)
 
 # Pull in the platform core targets. This makes gbarecomp_runtime,
 # gbarecomp_debug, gbarecomp_armv4t available as link targets.
@@ -58,6 +64,7 @@ add_executable(MinishCapRecomp
     src/main.cpp
     src/game_config.cpp
     src/minish_extended_view.cpp
+    src/mods/minish_adaptive_view_plugin.cpp
     ${MINISH_GENERATED_SOURCES}
 )
 
@@ -106,6 +113,8 @@ if(GBAGAME_RECOMP_UI)
         "${GBARECOMP_ROOT}/src/gba"
         src
     )
+    target_compile_definitions(game_launcher_ui PRIVATE
+        GBARECOMP_ENABLE_MODS=1)
     # sources, includes, RECOMP_LAUNCHER, asset staging
     recomp_target_launcher_ui(game_launcher_ui
         BOXART ${CMAKE_CURRENT_SOURCE_DIR}/recomp/launcher/boxart.tga)
@@ -116,6 +125,33 @@ if(GBAGAME_RECOMP_UI)
     endif()
     target_link_libraries(MinishCapRecomp PRIVATE game_launcher_ui)
     set_property(SOURCE src/main.cpp APPEND PROPERTY COMPILE_DEFINITIONS GBAGAME_RECOMP_UI)
+endif()
+
+# Ship the game-owned, disabled-by-default adaptive-view package beside the
+# executable. User-installed .gbamod archives join this same catalog.
+set(MINISH_PRELOADED_MODS "${CMAKE_CURRENT_SOURCE_DIR}/mods/preloaded")
+if(EXISTS "${MINISH_PRELOADED_MODS}/packages")
+    add_custom_command(TARGET MinishCapRecomp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${MINISH_PRELOADED_MODS}"
+            "$<TARGET_FILE_DIR:MinishCapRecomp>/mods"
+        COMMENT "Preloading the Minish Cap mod catalog")
+endif()
+
+if(BUILD_TESTING)
+    add_executable(minish_preloaded_mods_test
+        tests/test_preloaded_mods.cpp
+        "${GBARECOMP_ROOT}/src/runtime/mod_runtime.cpp"
+        "${GBARECOMP_ROOT}/src/gba/crc32.cpp"
+        "${GBARECOMP_ROOT}/src/gba/sha1.cpp")
+    target_compile_definitions(minish_preloaded_mods_test PRIVATE
+        GBARECOMP_MOD_UI=1)
+    target_include_directories(minish_preloaded_mods_test PRIVATE
+        "${GBARECOMP_ROOT}/src/runtime"
+        "${GBARECOMP_ROOT}/src/gba"
+        "${CMAKE_CURRENT_SOURCE_DIR}/recomp-ui/src")
+    add_test(NAME minish_preloaded_mods
+        COMMAND minish_preloaded_mods_test "${MINISH_PRELOADED_MODS}")
 endif()
 
 if(MSVC)

@@ -31,7 +31,7 @@ namespace {
 void print_usage() {
     std::printf(
         "MinishCapRecomp [--bios <path>] [--rom <path>] "
-        "[--resize-view] [game.toml]\n"
+        "[game.toml]\n"
         "\n"
         "Both BIOS and ROM are required (either via flags or via the\n"
         "[bios] / [rom] sections of game.toml). The runtime refuses\n"
@@ -70,17 +70,14 @@ int main(int argc, char** argv) {
     // The launcher's GAME card uses it for its "ROM verified" check; the
     // asset picker treats it as informational next to the SHA-1 gate.
     opts.builtin_rom_crc32  = 0xABCEBBB1u;
-    // Experimental, elective viewport policy: --resize-view (or the matching
-    // TOML setting) makes wider host aspects reveal more world up to 480x160.
-    // Keep it out of the public launcher until its performance is audited.
-    // This is a separate policy from MMZ's fixed --view-width choices.
+    opts.mod_game_id        = "minish-cap-us";
+    opts.mod_owns_adaptive_view = true;
+    // The adaptive-view implementation remains game-owned, but its activation
+    // is now authoritative in Mods rather than the generic Display settings.
     opts.max_resize_view_width = 480;
     opts.resize_driven_view    = true;
     opts.extended_view_init    = &minish::install_extended_view;
     opts.launcher_expose_widescreen = false;
-    // Keep the experimental resize-driven view available to explicit CLI/TOML
-    // opt-ins, but do not advertise an ambiguous "View mode" in either public
-    // recomp-ui surface.
     opts.launcher_expose_adaptive_view = false;
     opts.launcher_region    = "USA";
     opts.launcher_game_config = "game.toml";   // prefill ROM/BIOS from [rom]/[bios]

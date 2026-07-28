@@ -78,16 +78,13 @@ Save chip: EEPROM. (Other regions can be added by checksum in `config/<region>.t
 
 Save states: **Shift+F1–F9** save to a slot, **F1–F9** load it.
 
-## Experimental resize-driven extended view
+## Adaptive Widescreen mod
 
-The faithful default remains 240x160. The experiment is intentionally hidden
-from the pre-boot launcher until its performance has been audited. Developers
-can opt in by passing `--resize-view` or setting the following in `game.toml`:
-
-```toml
-[video]
-resize_view = true
-```
+The faithful default remains 240x160. Open **Mods** in the pre-boot launcher
+and enable **Adaptive Widescreen** to opt into the game-specific extended view.
+The feature is disabled by default and persists independently in
+`mods/state.toml`; old `--resize-view`, `game.toml`, and environment settings
+do not bypass the mod's ROM and plugin validation.
 
 This is intentionally different from Mega Man Zero's fixed-width modes. The
 window still opens at the native 3:2 size. As its aspect ratio becomes wider,
@@ -97,15 +94,15 @@ At 3:2 the literal native renderer is used; a typical 21:9 fullscreen display
 requests roughly 373x160. Resizing to a larger window with the same 3:2 aspect
 only scales the native image and does not reveal more world.
 
-This first implementation is a feasibility prototype. The side margins read
-Minish Cap's complete rendered room-layer buffers rather than the GBA's wrapping
+The side margins read Minish Cap's complete rendered room-layer buffers rather
+than the GBA's wrapping
 32x32 hardware tilemap, so authored scenery continues without repeating. An
 actual room edge clears naturally where no adjacent room pixels exist.
 The gameplay HUD follows the physical corners as the view changes width, while
 dialogue remains centered over the native play area. Entities, scripted
 triggers, other screen-space effects, and the hardware OAM limit retain original
-behavior, so they can pop in or assume the 240-pixel viewport. Remove the
-explicit opt-in for faithful presentation.
+behavior, so they can pop in or assume the 240-pixel viewport. Disable the mod
+to return to faithful presentation.
 
 ## How it self-improves
 

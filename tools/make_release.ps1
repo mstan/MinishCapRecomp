@@ -11,7 +11,7 @@ DLLs). The zip contains: MinishCapRecomp.exe (Release, MinGW, stripped) + the
 four runtime DLLs (SDL2.dll, libgcc_s_seh-1.dll, libstdc++-6.dll,
 libwinpthread-1.dll) + assets\ (the recomp-ui pre-boot launcher's fonts +
 image TGAs, staged next to the exe by recomp_target_launcher_ui's POST_BUILD)
-+ README.md.
++ mods\ (the disabled-by-default built-in feature catalog) + README.md.
 
 (Supersedes the older package_release.ps1, which built a static standalone exe;
 this matches the dynamic + bundled-DLL layout shipped for every other GBA game.)
@@ -89,6 +89,13 @@ foreach ($g in $games) {
   }
   Copy-Item $assets -Destination $stage -Recurse
 
+  # Built-in packages share the exact layout used by installed .gbamod files.
+  $mods = Join-Path $build 'mods'
+  if (-not (Test-Path (Join-Path $mods 'packages'))) {
+    throw "preloaded mod catalog missing: $mods"
+  }
+  Copy-Item $mods -Destination $stage -Recurse
+
   # Bundle the self-contained tcc overlay toolchain (TinyCC + overlay shim
   # headers) next to the exe so a toolchain-less player box self-heals overlay
   # gaps via tcc (overlay backend auto -> tcc). See gbarecomp/tools/fetch_tcc.ps1.
@@ -115,14 +122,16 @@ Static recompilation turns the game's ARM7TDMI code into native C++ (via the
 
 ## How to run
 
-1. Extract this folder (keep the four DLLs and the ``assets`` folder next to
-   ``$target.exe``).
+1. Extract this folder (keep the four DLLs plus the ``assets`` and ``mods``
+   folders next to ``$target.exe``).
 2. Run ``$target.exe``. The launcher opens: pick
    - your legally-obtained **$($g.Title) (USA)** ROM (``.gba``)$(if ($sha) { " - expected SHA-1 ``$sha``" })
    - a **GBA BIOS** dump (``gba_bios.bin``) under Settings > System.
    Settings, key rebinds, and hotkeys persist in ``config.ini`` /
    ``keybinds.ini`` next to the exe; the picked paths are cached to
    ``rom.cfg`` / ``bios.cfg``; save data lands next to your ROM.
+   Open **Mods** to enable the disabled-by-default **Adaptive Widescreen**
+   feature.
    (``--no-launcher`` boots straight to the game; "Skip launcher on boot"
    in the launcher does the same persistently, ``--launcher`` brings it back.)
 

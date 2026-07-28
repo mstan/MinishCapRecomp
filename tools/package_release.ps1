@@ -2,8 +2,9 @@
 #
 # Static-links SDL2 + libstdc++ + libgcc + libwinpthread via the
 # gbarecomp platform-core's GBARECOMP_STATIC_RELEASE=ON option, so
-# the released binary has zero third-party DLL dependencies and ships
-# without a sidecar game.toml (the runtime's RunOptions defaults
+# the released binary has zero third-party DLL dependencies and ships with its
+# disabled-by-default built-in mod catalog, without a sidecar game.toml
+# (the runtime's RunOptions defaults
 # carry the ROM SHA-1 + CRC32).
 #
 # Output: F:\Projects\gbarecomp\MinishCapRecomp\MinishCapRecomp.exe
@@ -43,9 +44,18 @@ if (Test-Path $ExeOut) {
 }
 Copy-Item $BuiltExe $ExeOut
 
+$BuiltMods = Join-Path $BuildPath "mods"
+if (-not (Test-Path (Join-Path $BuiltMods "packages"))) {
+    throw "preloaded mod catalog missing: $BuiltMods"
+}
+$ModsOut = Join-Path $Root "mods"
+New-Item -ItemType Directory -Force $ModsOut | Out-Null
+Copy-Item (Join-Path $BuiltMods "*") -Destination $ModsOut -Recurse -Force
+
 Write-Host ""
 Write-Host "Built standalone: $ExeOut"
 Get-Item $ExeOut | Format-List FullName, Length
+Write-Host "Preloaded mod catalog: $ModsOut"
 
 Write-Host ""
 Write-Host "DLL imports (should be Windows system DLLs only):"

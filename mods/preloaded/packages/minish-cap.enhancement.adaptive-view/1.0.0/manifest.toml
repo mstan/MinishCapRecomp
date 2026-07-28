@@ -1,0 +1,24 @@
+format_version = 1
+id = "minish-cap.enhancement.adaptive-view"
+version = "1.0.0"
+name = "Minish Cap Adaptive Widescreen"
+author = "mstan"
+description = "Reveals more of the room as the window widens, with game-specific tilemap, HUD, sprite, culling, and camera behavior."
+license = "MIT"
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "minish-cap-us"
+rom_sha1 = "b4bd50e4131b027c334547b4524e2dbbd4227130"
+
+[[feature]]
+id = "adaptive-view"
+name = "Adaptive Widescreen"
+description = "Expand the logical view from native 3:2 up to 3:1, following the live window or fullscreen aspect ratio."
+group = "Display"
+default_enabled = false
+
+[[plugin]]
+feature = "adaptive-view"
+id = "minish-cap.adaptive-view"
