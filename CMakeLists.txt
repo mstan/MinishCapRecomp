@@ -21,6 +21,8 @@ endif()
 # still owns which capabilities it advertises through RunOptions.
 set(GBARECOMP_RUNTIME_UI_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/recomp-ui"
     CACHE PATH "recomp-ui root used by the live GBA runtime adapter")
+set(RECOMP_UI_ROOT "${GBARECOMP_RUNTIME_UI_ROOT}"
+    CACHE PATH "Path to the shared recomp-ui checkout")
 
 # Minish Cap is the first GBA title to expose game-owned enhancements through
 # the package catalog. This also opens recomp-ui's otherwise inert Mods gate.
@@ -106,7 +108,7 @@ target_compile_definitions(MinishCapRecomp PRIVATE
 # ─────────────────────────────────────────────────────────────────────
 option(GBAGAME_RECOMP_UI "Build the recomp-ui pre-boot launcher" ON)
 if(GBAGAME_RECOMP_UI)
-    include(${CMAKE_CURRENT_SOURCE_DIR}/recomp-ui/recomp_ui.cmake)
+    include(${RECOMP_UI_ROOT}/recomp_ui.cmake)
     add_library(game_launcher_ui STATIC src/game_launcher_boot.cpp)
     target_include_directories(game_launcher_ui PRIVATE
         "${GBARECOMP_ROOT}/src/runtime"   # launcher_seam.h + runtime.h
@@ -117,6 +119,7 @@ if(GBAGAME_RECOMP_UI)
         GBARECOMP_ENABLE_MODS=1)
     # sources, includes, RECOMP_LAUNCHER, asset staging
     recomp_target_launcher_ui(game_launcher_ui
+        CONSOLE gba
         BOXART ${CMAKE_CURRENT_SOURCE_DIR}/recomp/launcher/boxart.tga)
     find_package(SDL2 REQUIRED)
     target_link_libraries(game_launcher_ui PUBLIC SDL2::SDL2)
