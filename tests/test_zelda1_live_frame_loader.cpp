@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <queue>
 #include <string>
 #include <vector>
@@ -41,6 +42,205 @@ bool write_frame_ppm(const std::filesystem::path& path, const z1::OwFramebuffer&
         ppm.put(static_cast<char>((b << 3) | (b >> 2)));
     }
     return static_cast<bool>(ppm);
+}
+
+struct SourceProbe {
+    bool walkable = false;
+    std::array<std::pair<std::int16_t, std::int16_t>, 2> samples{};
+    unsigned sample_count = 0;
+};
+
+std::optional<std::uint8_t> source_tile(const z1::OwRoomGeometry& geometry,
+                                        std::int16_t x, std::int16_t y) {
+    if (x < 0 || x >= 256 || y < 0x40 || y >= 0xf0) return std::nullopt;
+    return geometry.final_tiles[static_cast<std::size_t>((y - 0x40) >> 3) *
+                                    z1::kOwPlayfieldTileWidth +
+                                static_cast<std::size_t>(x >> 3)];
+}
+
+// Test-side transcription of Z_07:GetCollidingTileMoving.  It deliberately
+// does not call session internals: the actual session response below is the
+// oracle we compare against this source probe and paint onto its framebuffer.
+SourceProbe z07_source_probe(const z1::OwRoomGeometry& geometry,
+                             std::int16_t obj_x, std::int16_t obj_y,
+                             int direction, bool horizontal) {
+    std::int16_t probe_x = obj_x;
+    std::int16_t probe_y = static_cast<std::int16_t>(obj_y + 0x0b);
+    if (horizontal) {
+        if (!((direction < 0 && obj_x < 0x10) ||
+              (direction > 0 && obj_x >= 0xf0)))
+            probe_x += direction < 0 ? -0x08 : 0x10;
+    } else if (!(direction > 0 && probe_y >= 0xdd)) {
+        probe_y += direction < 0 ? -0x08 : 0x08;
+    }
+    SourceProbe result{};
+    result.samples[result.sample_count++] = {probe_x, probe_y};
+    const auto first = source_tile(geometry, probe_x, probe_y);
+    if (!first) return result;
+    std::uint8_t chosen = *first;
+    if (!horizontal) {
+        const auto adjacent_x = static_cast<std::int16_t>(probe_x + 8);
+        result.samples[result.sample_count++] = {adjacent_x, probe_y};
+        const auto adjacent = source_tile(geometry, adjacent_x, probe_y);
+        if (!adjacent) return result;
+        // Z_07 keeps the numerically higher adjacent tile; blocking final
+        // tiles sort after ordinary walkable tiles.
+        if (*adjacent > chosen) chosen = *adjacent;
+    }
+    result.walkable = z1::ow_final_tile_is_walkable(chosen);
+    return result;
+}
+
+void paint_probe(z1::OwFramebuffer* frame, const SourceProbe& probe) {
+    if (!frame) return;
+    // Green marks a source-walkable probe and red a source blocker.  Mark the
+    // exact raw NES tile sample(s), converted through the renderer crop
+    // (ObjX-8, ObjY-72), instead of painting a guessed Link footprint.
+    const std::uint16_t color = probe.walkable ? 0x03e0 : 0x001f;
+    for (unsigned i = 0; i < probe.sample_count; ++i) {
+        const auto [source_x, source_y] = probe.samples[i];
+        const auto x = static_cast<std::int16_t>(source_x - 8);
+        const auto y = static_cast<std::int16_t>(source_y - 72);
+        if (x < 0 || y < 0 || x >= static_cast<std::int16_t>(z1::kOwRenderWidth) ||
+            y >= static_cast<std::int16_t>(z1::kOwRenderHeight))
+            continue;
+        // Use a five-pixel cross rather than a single opaque dot: the marker
+        // remains legible in a screenshot at native 240x160 while preserving
+        // almost all source art. A grid point may be sampled by several
+        // directions, so keep red dominant over a later open probe.
+        constexpr std::array<std::pair<int, int>, 5> kCross{{
+            {0, 0}, {-1, 0}, {1, 0}, {0, -1}, {0, 1},
+        }};
+        for (const auto [dx, dy] : kCross) {
+            const auto px = static_cast<std::int16_t>(x + dx);
+            const auto py = static_cast<std::int16_t>(y + dy);
+            if (px < 0 || py < 0 || px >= static_cast<std::int16_t>(z1::kOwRenderWidth) ||
+                py >= static_cast<std::int16_t>(z1::kOwRenderHeight))
+                continue;
+            auto& pixel = (*frame)[static_cast<std::size_t>(py) * z1::kOwRenderWidth +
+                                   static_cast<std::size_t>(px)];
+            if (!probe.walkable || pixel != 0x001f) pixel = color;
+        }
+    }
+}
+
+void paint_collision_legend(z1::OwFramebuffer* frame) {
+    if (!frame) return;
+    // Top-left legend: green = PRG/source probe walkable; red = PRG/source
+    // probe blocked; blue/magenta are reserved for an actual-session mismatch.
+    constexpr std::array<std::uint16_t, 4> kLegend{{0x03e0, 0x001f, 0x7c00, 0x7c1f}};
+    for (std::size_t block = 0; block < kLegend.size(); ++block)
+        for (std::size_t y = 0; y < 5; ++y)
+            for (std::size_t x = 0; x < 5; ++x)
+                (*frame)[y * z1::kOwRenderWidth + block * 7 + x] = kLegend[block];
+}
+
+void stage_source_position(
+    std::array<std::uint8_t, z1::Zelda1OverworldSession::kSerializedSize>* state,
+    std::int16_t x, std::int16_t y);
+
+bool audit_source_collision_overlay(const char* path, std::uint8_t room,
+                                    const std::filesystem::path& artifact,
+                                    std::string* failure) {
+    auto session = std::make_unique<z1::Zelda1OverworldSession>();
+    std::string error;
+    if (!session->load_hash_validated_ines(path, room, &error)) {
+        if (failure) *failure = "could not load room $" + std::to_string(room) + ": " + error;
+        return false;
+    }
+    const auto room_start = session->serialize();
+    auto overlay = std::make_unique<z1::OwFramebuffer>(session->framebuffer());
+    paint_collision_legend(overlay.get());
+    struct Direction { int dx, dy; bool horizontal; };
+    constexpr std::array<Direction, 4> kDirections{{
+        {-1, 0, true}, {1, 0, true}, {0, -1, false}, {0, 1, false},
+    }};
+    unsigned checked = 0;
+    unsigned source_blocked = 0;
+    for (std::int16_t y = 0x45; y <= 0xcd; y += 8) {
+        for (std::int16_t x = 0x10; x <= 0xe0; x += 8) {
+            for (const auto direction : kDirections) {
+                const SourceProbe probe = z07_source_probe(
+                    session->geometry(), x, y,
+                    direction.horizontal ? direction.dx : direction.dy,
+                    direction.horizontal);
+                paint_probe(overlay.get(), probe);
+                auto candidate = room_start;
+                stage_source_position(&candidate, x, y);
+                if (!session->restore(candidate, &error)) {
+                    if (failure) *failure = "could not restore aligned source probe";
+                    return false;
+                }
+                const auto result = session->move_by(direction.dx, direction.dy);
+                const bool moved = result == z1::OverworldSessionMoveResult::kMoved ||
+                                   result == z1::OverworldSessionMoveResult::kCrossedRoom;
+                if (moved != probe.walkable) {
+                    // Retain the artifact even on a divergence. Blue means
+                    // source said walkable but the session blocked; magenta
+                    // means source said blocked but the session moved.
+                    const auto mismatch = probe.walkable ? 0x7c00 : 0x7c1f;
+                    for (unsigned i = 0; i < probe.sample_count; ++i) {
+                        const auto x = static_cast<std::int16_t>(probe.samples[i].first - 8);
+                        const auto y = static_cast<std::int16_t>(probe.samples[i].second - 72);
+                        if (x >= 0 && y >= 0 && x < static_cast<std::int16_t>(z1::kOwRenderWidth) &&
+                            y < static_cast<std::int16_t>(z1::kOwRenderHeight))
+                            (*overlay)[static_cast<std::size_t>(y) * z1::kOwRenderWidth + x] = mismatch;
+                    }
+                    (void)write_frame_ppm(artifact, *overlay);
+                    if (failure) {
+                        *failure = "Z_07 probe mismatch in room $" + std::to_string(room) +
+                            " at Obj=(" + std::to_string(x) + "," + std::to_string(y) + ")";
+                    }
+                    return false;
+                }
+                if (!probe.walkable) ++source_blocked;
+                ++checked;
+            }
+        }
+    }
+    if (checked == 0 || source_blocked == 0 || !session->restore(room_start, &error) ||
+        !write_frame_ppm(artifact, *overlay)) {
+        if (failure) *failure = "could not retain collision overlay";
+        return false;
+    }
+    return true;
+}
+
+bool ordinary_dpad_path_reaches_visible_wall(const char* path, std::uint8_t room,
+                                             std::string* failure) {
+    // This deliberately starts from the real load position (no serialized
+    // hotspot staging) and feeds only ordinary held cardinal input.  It must
+    // cross open terrain for at least one complete source grid segment and
+    // stop at a rendered blocker.
+    auto session = std::make_unique<z1::Zelda1OverworldSession>();
+    std::string error;
+    if (!session->load_hash_validated_ines(path, room, &error)) return false;
+    // These two paths begin at the exact source-load point, never restore a
+    // staged hotspot, and feed a single held Right D-pad input. Their stop
+    // coordinates are deliberately pinned in renderer-crop space so a future
+    // coordinate/focus translation cannot silently move collision away from
+    // the visible tree wall.
+    struct Path { unsigned pixels; std::int16_t stop_x, stop_y; };
+    const auto expected = room == 0x77 ? Path{80, 208, 157} :
+                          room == 0x76 ? Path{16, 144, 157} : Path{};
+    if (expected.pixels == 0) return false;
+    for (unsigned i = 0; i < expected.pixels; ++i)
+        if (session->move_by(1, 0) != z1::OverworldSessionMoveResult::kMoved) {
+            if (failure) *failure = "ordinary D-pad open-ground path stopped early";
+            return false;
+        }
+    const auto stop = session->source_position();
+    const auto probe = z07_source_probe(session->geometry(), stop.obj_x, stop.obj_y, 1, true);
+    if (stop.obj_x != expected.stop_x || stop.obj_y != expected.stop_y || probe.walkable ||
+        session->move_by(1, 0) != z1::OverworldSessionMoveResult::kBlocked) {
+        if (failure) {
+            *failure = "ordinary D-pad did not stop at the pinned visible wall crop=(" +
+                std::to_string(expected.stop_x - 8) + "," +
+                std::to_string(expected.stop_y - 72) + ")";
+        }
+        return false;
+    }
+    return true;
 }
 
 std::vector<std::uint8_t> synthetic_prg0_ines() {
@@ -381,6 +581,9 @@ int test_actual_ines_path(const char* path) {
         session.position().room_id != 0x77 || session.position().x != 120 ||
         session.position().y != 85 || session.framebuffer() != stable_frame)
         return fail("OW session did not atomically initialize from the live loader: " + error);
+    const auto initial_feet = session.presentation_feet_position();
+    if (initial_feet.x != 128 || initial_feet.y != 101)
+        return fail("OW presentation did not map source sprite bottom-center feet from the initial position");
     const auto initial_state = session.serialize();
     if (!z1::Zelda1OverworldSession::validate_serialized(initial_state) ||
         !can_prove_solid_block(&session) ||
@@ -389,6 +592,20 @@ int test_actual_ines_path(const char* path) {
         return fail("OW session did not match source visible final-tile collision atomically");
     if (!session.restore(initial_state, &error) || !can_prove_midcell_turn_lock(&session))
         return fail("OW session did not retain source ObjGridOffset/ObjDir through a mid-cell turn");
+    // Exhaust every interior source-grid collision probe against the actual
+    // session response, then retain a screenshot-review overlay.  OW76 is a
+    // direct neighbour of the start room and guards that this is not a
+    // one-room renderer/collision coincidence.
+    std::string collision_failure;
+    if (!audit_source_collision_overlay(path, 0x77,
+                                        "build/zelda1_ow77_collision_probes.ppm",
+                                        &collision_failure) ||
+        !audit_source_collision_overlay(path, 0x76,
+                                        "build/zelda1_ow76_collision_probes.ppm",
+                                        &collision_failure) ||
+        !ordinary_dpad_path_reaches_visible_wall(path, 0x77, &collision_failure) ||
+        !ordinary_dpad_path_reaches_visible_wall(path, 0x76, &collision_failure))
+        return fail("source collision audit failed: " + collision_failure);
     // Cover several independently rendered First Quest rooms. Each check
     // stages an actual source final-tile boundary and proves a one-pixel host
     // movement cannot cross it, so collision cannot drift from the map used
@@ -456,9 +673,11 @@ int test_actual_ines_path(const char* path) {
     const auto cave_entry_state = session.serialize();
     const auto cave_entry_position = session.cave_source_position();
     const auto cave_entry_presentation = session.cave_presentation_position();
+    const auto overworld_feet = session.presentation_feet_position();
     if (!cave_entry_position || !cave_entry_presentation || cave_entry_position->x != 0x70 ||
-        cave_entry_position->y != 0xad || cave_entry_presentation->x != 0x68 ||
-        cave_entry_presentation->y != 0x65 || !session.cave_entry_settled() ||
+        cave_entry_position->y != 0xad || cave_entry_presentation->x != 0x70 ||
+        cave_entry_presentation->y != 0x75 || overworld_feet.x != 64 ||
+        overworld_feet.y != 21 || !session.cave_entry_settled() ||
         session.cave_dialogue_acknowledged() ||
         session.move_cave_one(z1::CaveDirection::kDown) !=
             z1::StartCaveMoveResult::kDialogueBlocked ||

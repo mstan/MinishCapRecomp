@@ -56,12 +56,16 @@ int main() {
         first->abi_version != GBA_FOREIGN_OBJ_FOCUS_ABI_VERSION ||
         first->source_radius_x != 32 || first->source_radius_y != 40 ||
         first->flags != (GBA_FOREIGN_OBJ_FOCUS_PRESERVE_UNFOCUSED |
-                         GBA_FOREIGN_OBJ_FOCUS_SOURCE_TILE_RANGE |
-                         GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_LARGE_NEARBY) ||
+                          GBA_FOREIGN_OBJ_FOCUS_SOURCE_TILE_RANGE |
+                          GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_LARGE_NEARBY |
+                          GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_NEARBY_NONMATCHING |
+                          GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_NONMATCHING_EXCEPT_HUD_PRIORITY) ||
         first->source_obj_tile_base != 0x160 ||
         first->source_obj_tile_count != 16 ||
         first->source_aux_obj_tile_base != 1 ||
-        first->source_aux_obj_tile_count != 1)
+        first->source_aux_obj_tile_count != 1 ||
+         first->source_obj_scale_q8_8 != 192 ||
+         first->hud_obj_priority_max != 1 || first->reserved != 0)
         return (std::cerr << "FAIL: focus descriptor double-buffer is not stable\n", 1);
     z1::ActiveLowButtonEdge edge;
     if (edge.observe(0x03ff, 1) || !edge.observe(0x03fe, 1) ||

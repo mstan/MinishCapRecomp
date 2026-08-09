@@ -43,7 +43,7 @@ struct LinearMoveAccumulator {
 // address. The caller intentionally leaves R0..R14 and CPSR bit-identical.
 [[nodiscard]] std::uint32_t linear_move_handled_return_pc(std::uint32_t lr);
 
-// Immutable v3 PPU descriptor production. The two buffers are intentionally
+// Immutable v5 PPU descriptor production. The two buffers are intentionally
 // separate: fully write the inactive descriptor, then publish its address.
 // This makes a prior PPU-visible descriptor stable through the next update.
 // The source-mapped player feet are associated with Entity::spriteVramOffset's

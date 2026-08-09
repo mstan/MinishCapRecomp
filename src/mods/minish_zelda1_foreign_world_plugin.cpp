@@ -96,17 +96,23 @@ bool publish_current_foreign_video() {
             level1_active ? level1.framebuffer->data()
                           : g_overworld_session.framebuffer().data()) == 0)
         return false;
-    const auto position = g_overworld_session.position();
+    const auto overworld_feet = g_overworld_session.presentation_feet_position();
     const auto cave_position = g_overworld_session.cave_presentation_position();
     const auto* focus = g_obj_focus.next(
         static_cast<std::int16_t>(read_guest_s16(kPlayerFeetX) -
                                   read_guest_s16(kRoomScrollX)),
         static_cast<std::int16_t>(read_guest_s16(kPlayerFeetY) -
                                   read_guest_s16(kRoomScrollY)),
-        level1_active ? level1.player.x :
-            (cave_position ? cave_position->x : static_cast<std::int16_t>(position.x)),
-        level1_active ? level1.player.y :
-            (cave_position ? cave_position->y : static_cast<std::int16_t>(position.y)),
+        level1_active ? static_cast<std::int16_t>(level1.player.x +
+                                                   kZelda1LinkFeetOffsetX) :
+            (cave_position ? cave_position->x : overworld_feet.x),
+        // Level1PlayerPresentation is the source 16x16 sprite anchor used by
+        // its host controller. The ABI destination is explicitly Link's feet,
+        // so use the source sprite's bottom center (+$08,+$10); Z_07's
+        // ObjY+$0b collision sample is five pixels above that visual anchor.
+        level1_active ? static_cast<std::int16_t>(level1.player.y +
+                                                   kZelda1LinkFeetOffsetY) :
+            (cave_position ? cave_position->y : overworld_feet.y),
         bus_read_u16(kPlayerSpriteVramOffset), kPlayerShadowObjTile,
         (bus_read_u8(kPlayerDraw) & 0x30u) != 0 ? 1u : 0u);
     if (gba_mod_publish_foreign_obj_focus(kZelda1ForeignWorldPluginId, focus) == 0) {

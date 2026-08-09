@@ -93,11 +93,24 @@ const GbaForeignObjFocusTransform* ForeignObjFocusDoubleBuffer::next(
         40,
         GBA_FOREIGN_OBJ_FOCUS_PRESERVE_UNFOCUSED |
             GBA_FOREIGN_OBJ_FOCUS_SOURCE_TILE_RANGE |
-            GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_LARGE_NEARBY,
+            GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_LARGE_NEARBY |
+            GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_NEARBY_NONMATCHING |
+            GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_NONMATCHING_EXCEPT_HUD_PRIORITY,
         source_obj_tile_base,
         16,
         source_aux_tile_base,
         source_aux_tile_count,
+        // Minish Link's source sprite is designed around 16px-scale GBA
+        // characters, while Zelda 1's terrain is authored on an 8px grid.
+        // A 3/4 presentation-only scale makes the focused body and shadow
+        // read proportionally without changing the NES coordinate/collision
+        // model or zooming the room.
+        192,
+        // Live native OAM capture classifies HUD entries at OBJ priority 0/1;
+        // Link, shadow, house door, and room props are priority 2.  Retain
+        // only that HUD class outside the exact source player allocations.
+        1,
+        0,
     };
     next_index_ ^= 1u;
     return &out;

@@ -349,7 +349,9 @@ int main(int argc, char** argv) {
         if (gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu) != 0)
             return fail("read-only UpdateEntities observer unexpectedly replaced guest control");
     }
-    if (observe_cpu.R[15] != observe_before.R[15] || !g_foreign_background || !g_foreign_focus)
+    if (observe_cpu.R[15] != observe_before.R[15] || !g_foreign_background || !g_foreign_focus ||
+        g_foreign_focus->destination_link_feet_x != 128 ||
+        g_foreign_focus->destination_link_feet_y != 101)
         return fail("plugin did not publish the OW mode frame/focus through the trusted seam");
     // Foreign locomotion is frame/KEYINPUT driven.  Deliberately do not call
     // LinearMoveDirectionOLD here: Minish collision can suppress that

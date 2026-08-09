@@ -142,10 +142,11 @@ this normal cave `$77` has source cave index `$10`. On exit, `InitMode2` derives
 returns at the last value, viewport `(56,21)`, where the original starts its
 walk-down animation.
 
-The session record is fixed 16-byte `Z1OS` version 3. It persists its
-overworld/cave area, source cave index, and one-way starting-sword flag; restore
-rejects an area/index combination that does not agree with the currently
-loaded room's source entrance record.
+The session record is fixed 64-byte `Z1OS` version 7. It persists signed source
+coordinates, source grid phase/direction, overworld/cave area, source cave
+index, and one-way starting-sword state; strict v5/v6 migration produces a
+canonical settled source-grid record. Restore rejects an area/index combination
+that does not agree with the currently loaded room's source entrance record.
 
 ## First Quest starting sword cave
 
@@ -213,25 +214,26 @@ pair unchanged; `framebuffer()` then exposes the stable 240x160 BGR555 array.
 ## Overworld session host policy
 
 `Zelda1OverworldSession` is a reusable pure layer around the live loader and
-shared static geometry. It owns only the active OW room and a virtual 240x160
-Link feet position; world flags, inventory, actors, and the `Z1WM v2` blob
-remain owned by `Zelda1WorldModel`, so room position is not duplicated there.
-Its fixed 16-byte `Z1OS` v3 record serializes that state plus its explicit
-overworld/cave mode, source cave index, and one-way starting-sword state, and restores room/frame/geometry
-failure-atomically from the already loaded,
+shared static geometry. It owns the active OW room plus signed source
+`ObjX/ObjY`; its presentation position is the fixed crop inverse
+`(ObjX-8, ObjY-72)`. World flags, inventory, and actor records remain owned by
+their respective host controllers. Its fixed 64-byte `Z1OS` v7 record restores
+room/frame/geometry failure-atomically from the already loaded,
 caller-identity-validated PRG.
 
-The input is proposed pixel displacement, not NES button state. The host
-policy probes a one-pixel feet position against the source-derived final-tile
-classes, applies X then Y in deterministic one-pixel steps, and rejects a
-solid sampled tile. Crossing uses the source `x + 16*y` room lattice. It first
-places Link on the opposite crop edge; where that rendered edge is entirely
-solid, it chooses the nearest walkable point measured inward from that side,
-then by preserved perpendicular coordinate. This fallback and all virtual
-coordinates are adapter policy, not a claim about the NES scrolling/hotspot
-implementation. The actual PRG test covers all four transitions connecting
-`$77/$67/$66/$76`, verifies a solid rejection, persistence failure atomicity,
-and pins each rendered room frame plus deterministic entry coordinates.
+That crop position is Link's source sprite origin, not the Minish focus
+destination. `Z_01:Anim_WriteSpritePair` draws the 16x16 Zelda Link from
+`ObjX/ObjY`, so the data-only Minish OBJ-focus destination uses its
+bottom-center feet `(ObjX, ObjY-56)` after the usual crop: source `+$08,+$10`
+followed by crop `-$08,-$48`. This presentation-only conversion applies in the
+overworld, caves, and Level 1. `Z_07` collision's `ObjY+$0B` remains a distinct
+inset sample point five pixels above the visual feet; it does not change
+collision, warps, source coordinates, or persistence.
+
+Input is a proposed one-pixel cardinal displacement. The session reproduces
+the source grid-phase/direction cadence, uses `Z_07` directional probes at
+source grid points, and crosses the `x + 16*y` lattice only at the original
+`PlayerScreenEdgeBounds`; it does not choose a crop-local fallback position.
 
 ## Level 1 static room renderer
 
@@ -353,10 +355,23 @@ validator explores and replays only these source grid/edge states, then emits
 a compressed D-pad trace on success; it does not treat a room-number chain as
 proof that a visible terrain route exists.
 
+The live-frame test retains screenshot-review overlays
+`build/zelda1_ow77_collision_probes.ppm` and
+`build/zelda1_ow76_collision_probes.ppm`. Green crosses mark PRG-derived
+Z_07 walkable samples and red crosses mark PRG-derived blockers; the top-left
+legend reserves blue/magenta for a source/session disagreement. The test
+exhaustively compares each expected source probe with the actual session
+response, then drives ordinary held-Right input from each real loaded start
+to a visible tree wall: OW77 stops at crop `(200,85)` after 80 pixels and
+OW76 at `(136,85)` after 16. This collision audit does not alter PPU
+presentation, focus, or scaling.
+
 The adapter publishes only a stable framebuffer pointer, room ID, and a
-host presentation coordinate. Its initial X uses source `$80` through the
-8-pixel crop and LevelInfo's source `StartY` through the same 72-pixel
-status-bar crop used by OW/cave positions. Until UW collision is decoded,
+host presentation coordinate. Its source sprite origin uses source `$80`
+through the 8-pixel crop and LevelInfo's source `StartY` through the same
+72-pixel status-bar crop used by OW/cave positions; publication converts that
+16x16 sprite origin to bottom-center feet before using the Minish focus ABI.
+Until UW collision is decoded,
 inside-room movement is expressly host policy: one-pixel bounded movement with
 X then Y ordering. A room-edge transition is offered only when that
 presentation point reaches the crop edge. It delegates the exact E/W/S/N door

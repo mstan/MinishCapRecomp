@@ -58,9 +58,17 @@ enum class OverworldSessionSwordResult : std::uint8_t {
   kInvalid,
 };
 
-// Presentation coordinates are the source ObjX/ObjY mapped through the same
-// -8/-72 crop used by the cave renderer. They are deliberately separate from
-// the retained OW portal position while the session is in a cave.
+// Z_01:Anim_WriteSpritePair writes ObjX/ObjY as the left/top OAM coordinate
+// of Link's 16x16 sprite and writes its second half at X+$08. The foreign OBJ
+// focus ABI, however, takes Link feet: source presentation must therefore use
+// bottom-center (+$08,+$10), not the sprite origin. Z_07 collision's
+// ObjY+$0b hotspot remains an inset point five pixels above those feet and is
+// intentionally not used for visual focus.
+inline constexpr std::int16_t kZelda1LinkFeetOffsetX = 0x08;
+inline constexpr std::int16_t kZelda1LinkFeetOffsetY = 0x10;
+
+// Presentation feet coordinates are deliberately separate from the retained
+// OW portal position while the session is in a cave.
 struct CavePresentationPosition {
   std::int16_t x = 0;
   std::int16_t y = 0;
@@ -166,6 +174,17 @@ public:
             static_cast<std::int16_t>(source_position_.obj_x - 8),
             static_cast<std::int16_t>(source_position_.obj_y - 72)};
   }
+  // This is the only OW coordinate suitable for GbaForeignObjFocusTransform's
+  // destination_link_feet fields. It intentionally leaves source_position_
+  // untouched: ObjY's unadjusted value is still required by CheckWarps and
+  // ObjGridOffset cadence.
+  [[nodiscard]] OverworldSessionPosition presentation_feet_position() const {
+    return {source_position_.room_id,
+            static_cast<std::int16_t>(source_position_.obj_x +
+                                      kZelda1LinkFeetOffsetX - 8),
+            static_cast<std::int16_t>(source_position_.obj_y +
+                                      kZelda1LinkFeetOffsetY - 72)};
+  }
   [[nodiscard]] OverworldSourcePosition source_position() const {
     return source_position_;
   }
@@ -198,8 +217,10 @@ public:
     const auto source = cave_source_position();
     if (!source) return std::nullopt;
     return CavePresentationPosition{
-        static_cast<std::int16_t>(static_cast<int>(source->x) - 8),
-        static_cast<std::int16_t>(static_cast<int>(source->y) - 72)};
+        static_cast<std::int16_t>(static_cast<int>(source->x) +
+                                  kZelda1LinkFeetOffsetX - 8),
+        static_cast<std::int16_t>(static_cast<int>(source->y) +
+                                  kZelda1LinkFeetOffsetY - 72)};
   }
   [[nodiscard]] const OwFramebuffer &framebuffer() const {
     return framebuffer_;
