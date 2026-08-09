@@ -5,6 +5,8 @@
 roms/
 *.gba
 *.GBA
+*.nes
+*.NES
 
 # ─────────────────────────────────────────────────────────────────────
 # Save files
@@ -36,6 +38,7 @@ build-*/
 *.idb
 build-release/
 release-stage/
+foreign-world-cache/
 MinishCapRecomp.exe
 MinishCapRecomp-v*-windows-x64.zip
 MinishCapRecomp-v*-windows-x64.exe
