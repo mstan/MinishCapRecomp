@@ -152,6 +152,17 @@ if(BUILD_TESTING)
         minish_foreign_world_core)
     add_test(NAME minish_foreign_world COMMAND minish_foreign_world_test)
 
+    add_library(minish_zelda1_first_quest_data STATIC
+        src/foreign_worlds/zelda1/zelda1_first_quest_data.cpp)
+    target_include_directories(minish_zelda1_first_quest_data PUBLIC src)
+
+    add_executable(minish_zelda1_first_quest_data_test
+        tests/test_zelda1_first_quest_data.cpp)
+    target_link_libraries(minish_zelda1_first_quest_data_test PRIVATE
+        minish_zelda1_first_quest_data)
+    add_test(NAME minish_zelda1_first_quest_data
+        COMMAND minish_zelda1_first_quest_data_test)
+
     add_executable(minish_preloaded_mods_test
         tests/test_preloaded_mods.cpp
         "${GBARECOMP_ROOT}/src/runtime/mod_runtime.cpp"
