@@ -1,6 +1,8 @@
 #include "foreign_worlds/foreign_world.h"
 #include "foreign_worlds/zelda1/minish_foreign_combat_adapter.h"
+#include "foreign_worlds/zelda1/minish_host_sword_swing.h"
 
+#include <algorithm>
 #include <array>
 #include <iostream>
 #include <string>
@@ -166,8 +168,33 @@ int main() {
     return fail("pending Zelda drop was not collected through proximity");
 
   const auto invalid_facing = z1::foreign_sword_facing(1);
-  if (invalid_facing || z1::is_active_minish_sword({1, 0, 0, 1, 0}) ||
+  const auto walk_facing = z1::foreign_sword_facing_from_direction(8);
+  if (invalid_facing || !walk_facing || *walk_facing != z1::ForeignSwordFacing::kEast ||
+      z1::foreign_sword_facing_from_direction(32) ||
+      z1::is_active_minish_sword({1, 0, 0, 1, 0}) ||
       z1::is_active_minish_sword({7, 7, 0, 1, 0}))
-    return fail("unproven source item/facing was accepted");
+    return fail("source sword-facing validation/fallback was incorrect");
+
+  // A selected Zelda sword has no Minish ItemSword to animate, so its
+  // compositor-only strike must provide clear, bounded feedback without
+  // changing the immutable room framebuffer.  The visual is deliberately
+  // original host geometry rather than a copied Zelda/TMC sprite.
+  z1::HostSwordSwingPresentation swing;
+  z1::OwFramebuffer background{};
+  const auto* base = background.data();
+  swing.begin(z1::ForeignSwordFacing::kEast);
+  const auto* strike = swing.compose(base, 100, 100);
+  const auto changed = std::count_if(strike, strike + background.size(),
+                                     [](std::uint16_t pixel) { return pixel != 0; });
+  if (!strike || strike == base || changed < 8 || !swing.active() ||
+      swing.frames_remaining() != z1::HostSwordSwingPresentation::kVisibleFrames ||
+      std::any_of(background.begin(), background.end(),
+                  [](std::uint16_t pixel) { return pixel != 0; }))
+    return fail("host Zelda sword strike did not render as an isolated transient layer");
+  for (unsigned frame = 0; frame < z1::HostSwordSwingPresentation::kVisibleFrames;
+       ++frame)
+    swing.advance();
+  if (swing.active() || swing.compose(base, 100, 100) != base)
+    return fail("host Zelda sword strike did not expire without changing terrain");
   return 0;
 }

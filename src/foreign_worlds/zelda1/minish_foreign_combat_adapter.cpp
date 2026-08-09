@@ -52,6 +52,18 @@ std::optional<ForeignSwordFacing> foreign_sword_facing(
   }
 }
 
+std::optional<ForeignSwordFacing> foreign_sword_facing_from_direction(
+    std::uint8_t direction) {
+  if ((direction & 0x80u) != 0 || direction >= 32) return std::nullopt;
+  // TMC's LinearMoveDirectionOLD table uses 0=N, 8=E, 16=S, and 24=W.
+  // Nearest-cardinal buckets preserve the current facing during diagonal
+  // walking without inventing a guest item action.
+  if (direction <= 3 || direction >= 29) return ForeignSwordFacing::kNorth;
+  if (direction <= 11) return ForeignSwordFacing::kEast;
+  if (direction <= 19) return ForeignSwordFacing::kSouth;
+  return ForeignSwordFacing::kWest;
+}
+
 ForeignSwordHitbox foreign_sword_hitbox(std::uint8_t source_x,
                                         std::uint8_t source_y,
                                         ForeignSwordFacing facing) {
@@ -141,7 +153,10 @@ ForeignCombatEvents MinishForeignCombatAdapter::tick(
     const std::uint8_t animation_state = sword_edge
         ? input.sword.player_animation_state
         : input.player_animation_state;
-    if (const auto facing = foreign_sword_facing(animation_state)) {
+    auto facing = foreign_sword_facing(animation_state);
+    if (!facing && !sword_edge)
+      facing = foreign_sword_facing_from_direction(input.player_direction);
+    if (facing) {
       const auto hitbox = foreign_sword_hitbox(input.link_source_x,
                                                 input.link_source_y, *facing);
       const auto& actors = octoroks.actors();

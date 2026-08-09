@@ -27625,6 +27625,11 @@ addr = 0x080027EA
 mode = "thumb"
 note = "Source-imported LinearMoveDirectionOLD Player-only foreign-session adapter; declines every non-gPlayerEntity call."
 
+[[mod_function_hook]]
+addr = 0x08080840
+mode = "thumb"
+note = "Source-imported DoExitTransition clears the native-only Zelda portal overlay; it never modifies guest state."
+
 
 [[extra_func]]
 addr = 0x0805E5F8

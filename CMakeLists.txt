@@ -73,6 +73,7 @@ add_executable(MinishCapRecomp
     src/foreign_worlds/zelda1/smith_yard_readiness.cpp
     src/foreign_worlds/zelda1/smith_yard_qa_room.cpp
     src/foreign_worlds/zelda1/minish_portal_readiness.cpp
+    src/foreign_worlds/zelda1/minish_foreign_portal.cpp
     src/foreign_worlds/zelda1/minish_linear_move_adapter.cpp
     src/foreign_worlds/zelda1/minish_foreign_combat_adapter.cpp
     # The live temporary seam reads only the user's already validated iNES
@@ -277,6 +278,15 @@ if(BUILD_TESTING)
         minish_portal_readiness)
     add_test(NAME minish_portal_readiness COMMAND minish_portal_readiness_test)
 
+    add_library(minish_foreign_portal STATIC
+        src/foreign_worlds/zelda1/minish_foreign_portal.cpp)
+    target_include_directories(minish_foreign_portal PUBLIC src)
+
+    add_executable(minish_foreign_portal_test
+        tests/test_minish_foreign_portal.cpp)
+    target_link_libraries(minish_foreign_portal_test PRIVATE minish_foreign_portal)
+    add_test(NAME minish_foreign_portal COMMAND minish_foreign_portal_test)
+
     add_executable(minish_smith_yard_readiness_plugin_test
         tests/test_smith_yard_readiness_plugin.cpp
         src/foreign_worlds/foreign_world.cpp
@@ -284,6 +294,7 @@ if(BUILD_TESTING)
         src/foreign_worlds/zelda1/smith_yard_readiness.cpp
         src/foreign_worlds/zelda1/smith_yard_qa_room.cpp
         src/foreign_worlds/zelda1/minish_portal_readiness.cpp
+        src/foreign_worlds/zelda1/minish_foreign_portal.cpp
         src/foreign_worlds/zelda1/minish_linear_move_adapter.cpp
         src/foreign_worlds/zelda1/minish_foreign_combat_adapter.cpp
         src/foreign_worlds/zelda1/zelda1_first_quest_data.cpp

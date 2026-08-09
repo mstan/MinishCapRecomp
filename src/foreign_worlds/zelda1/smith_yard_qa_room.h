@@ -32,17 +32,15 @@ enum class QaRoomEvent : std::uint8_t {
     ExitedBecauseNormalControlEnded,
 };
 
-// The edge-safe state machine behind the temporary QA trigger.  Holding
-// all-four-D-pad for this many UpdateEntities calls enters; releasing it is
-// required before the same chord can exit. It deliberately accepts an
-// externally supplied source-identified normal-player heartbeat rather than
-// inventing a normal-control guest-memory field.
+// The active-session edge-safe state machine. The old all-four-D-pad entry
+// chord has been retired: a host-owned South Hyrule Field portal calls enter()
+// after independently validating its source-world position and released-then-A
+// interaction. The chord remains an explicit active-world exit only.
 class SmithYardQaRoom {
 public:
-    static constexpr unsigned kActivationUpdates = 18;
-
-    [[nodiscard]] QaRoomEvent update(bool entry_ready, bool survival_safe,
+    [[nodiscard]] QaRoomEvent update(bool survival_safe,
                                      std::uint16_t keyinput);
+    void enter();
     // Snapshot restoration owns only lifecycle visibility, not a partial
     // activation chord. An active restore must observe a release before a
     // held chord can intentionally exit again.
@@ -54,7 +52,7 @@ public:
 private:
     bool active_ = false;
     bool chord_latched_ = false;
-    unsigned held_updates_ = 0;
+    unsigned held_updates_ = 0; // retained only for legacy diagnostics (=0)
 };
 
 // Deterministically paints a 240x160 BGR555 room with no Zelda ROM bytes.

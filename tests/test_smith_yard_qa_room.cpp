@@ -15,28 +15,31 @@ int fail(const std::string& message) {
 
 int main() {
     z1::SmithYardQaRoom room;
-    for (unsigned i = 0; i + 1 < z1::SmithYardQaRoom::kActivationUpdates; ++i)
-        if (room.update(true, true, 0) != z1::QaRoomEvent::None || room.active())
-            return fail("QA room entered before the documented chord hold");
-    if (room.update(true, true, 0) != z1::QaRoomEvent::Entered || !room.active())
-        return fail("QA room did not enter after all-D-pad hold");
-    // The entering chord is latched; it cannot also immediately exit.
-    if (room.update(true, true, 0) != z1::QaRoomEvent::None || !room.active())
-        return fail("QA trigger was not edge safe");
-    (void)room.update(true, true, z1::kGbaKeysReleased);
-    if (room.update(true, true, 0) != z1::QaRoomEvent::ExitedByTrigger || room.active())
-        return fail("QA room did not leave after a released-and-held chord");
+    // The old four-direction chord is now exit-only. No inactive chord hold
+    // may enter this controller; the source-coordinate portal owns entry.
+    for (unsigned i = 0; i != 40; ++i)
+        if (room.update(true, 0) != z1::QaRoomEvent::None || room.active())
+            return fail("inactive all-Dpad chord remained a foreign-world entry path");
+    room.enter();
+    if (!room.active()) return fail("host portal did not activate the foreign lease");
+    if (room.update(true, z1::kGbaKeysReleased) != z1::QaRoomEvent::None || !room.active())
+        return fail("portal entry did not require Dpad release before exit");
+    if (room.update(true, 0) != z1::QaRoomEvent::ExitedByTrigger || room.active())
+        return fail("active all-Dpad chord did not leave the foreign lease");
+    // The leaving chord remains latched until released, so it cannot bounce
+    // immediately into any future entry mechanism.
+    if (room.update(true, 0) != z1::QaRoomEvent::None || room.active())
+        return fail("held exit chord was not latch-safe");
 
     room.reset();
-    for (unsigned i = 0; i < z1::SmithYardQaRoom::kActivationUpdates; ++i)
-        (void)room.update(true, true, 0);
     // Action/control can become transiently unavailable while the session is
     // active; only the independent danger/survival gate may dismiss it.
-    if (room.update(false, true, z1::kGbaKeysReleased) != z1::QaRoomEvent::None || !room.active())
-        return fail("active QA room incorrectly used entry readiness as survival");
-    if (room.update(false, false, z1::kGbaKeysReleased) !=
+    room.enter();
+    if (room.update(true, z1::kGbaKeysReleased) != z1::QaRoomEvent::None || !room.active())
+        return fail("active room incorrectly used native readiness as survival");
+    if (room.update(false, z1::kGbaKeysReleased) !=
             z1::QaRoomEvent::ExitedBecauseNormalControlEnded || room.active())
-        return fail("QA room did not leave when normal player control ended");
+        return fail("foreign lease did not leave when normal player control ended");
 
     std::array<std::uint16_t, z1::kQaRoomPixels> pixels{};
     z1::render_smith_yard_qa_room(pixels);

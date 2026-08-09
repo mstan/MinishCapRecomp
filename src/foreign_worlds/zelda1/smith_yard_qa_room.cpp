@@ -72,8 +72,7 @@ bool trigger_held(std::uint16_t keyinput) {
 
 }  // namespace
 
-QaRoomEvent SmithYardQaRoom::update(bool entry_ready, bool survival_safe,
-                                    std::uint16_t keyinput) {
+QaRoomEvent SmithYardQaRoom::update(bool survival_safe, std::uint16_t keyinput) {
     if (active_ && !survival_safe) {
         active_ = false;
         held_updates_ = 0;
@@ -95,14 +94,17 @@ QaRoomEvent SmithYardQaRoom::update(bool entry_ready, bool survival_safe,
         held_updates_ = 0;
         return QaRoomEvent::ExitedByTrigger;
     }
-    if (!entry_ready) return QaRoomEvent::None;
+    // Deliberately no inactive entry path. The concrete native portal owns
+    // that interaction and all-Dpad is never a Minish->Zelda input route.
+    return QaRoomEvent::None;
+}
 
-    ++held_updates_;
-    if (held_updates_ < kActivationUpdates) return QaRoomEvent::None;
+void SmithYardQaRoom::enter() {
     active_ = true;
+    // A portal A edge can coincide with all four D-pad buttons. Require a
+    // release before that pre-existing chord is allowed to act as exit.
     chord_latched_ = true;
     held_updates_ = 0;
-    return QaRoomEvent::Entered;
 }
 
 void SmithYardQaRoom::reset() {

@@ -2,13 +2,17 @@
 #include "foreign_worlds/zelda1/smith_yard_qa_room.h"
 #include "foreign_worlds/foreign_world_native_state.h"
 #include "foreign_worlds/zelda1/minish_foreign_combat_adapter.h"
+#include "foreign_worlds/zelda1/minish_foreign_portal.h"
+#include "foreign_worlds/zelda1/minish_host_sword_swing.h"
 #include "foreign_worlds/zelda1/minish_linear_move_adapter.h"
 #include "foreign_worlds/zelda1/minish_portal_readiness.h"
 #include "foreign_worlds/zelda1/zelda1_level1_live_adapter.h"
 #include "foreign_worlds/zelda1/zelda1_overworld_session.h"
 
 #include <string>
+#include <array>
 
+#include "foreign_screen_overlay.h"
 #include "mod_function_hooks.h"
 #include "mod_runtime.h"
 #include "runtime_arm.h"
@@ -20,6 +24,8 @@ namespace {
 constexpr std::uint32_t kRoomControls = 0x03000BF0;
 constexpr std::uint32_t kRoomControlsArea = kRoomControls + 0x04;
 constexpr std::uint32_t kRoomControlsRoom = kRoomControls + 0x05;
+constexpr std::uint32_t kRoomControlsOriginX = kRoomControls + 0x06;
+constexpr std::uint32_t kRoomControlsOriginY = kRoomControls + 0x08;
 constexpr std::uint32_t kRoomTransition = 0x030010A0;
 constexpr std::uint32_t kRoomFrameCount = kRoomTransition;
 constexpr std::uint32_t kTransitioningOut = kRoomTransition + 0x08;
@@ -28,6 +34,7 @@ constexpr std::uint32_t kUpdateEntities = 0x0805E5C0;
 // this only after CheckInitPauseMenu's Start/control/message eligibility gate,
 // so this is narrower than sampling raw Start input from a gameplay hook.
 constexpr std::uint32_t kInitPauseMenu = 0x080A4D88;
+constexpr std::uint32_t kDoExitTransition = 0x08080840;
 // Source-imported `ram_UpdateEntities` is the IWRAM copy Minish actually
 // executes each frame. It remains a read-only lifecycle hook; PPU rendering
 // no longer needs a guest-frame reblit or any guest VRAM/MMIO writes.
@@ -81,6 +88,12 @@ constexpr std::uint32_t kPlayerSwordState = 0x03003F9B;   // PlayerState + 0x1B
 SmithYardReadinessTracker g_tracker;
 MinishPortalReadinessTracker g_portal_tracker;
 SmithYardQaRoom g_qa_room;
+MinishForeignPortalController g_native_portal;
+MinishForeignPortalRenderer g_native_portal_renderer;
+std::array<GbaForeignScreenOverlay, 2> g_native_portal_overlays{};
+unsigned g_next_native_portal_overlay = 0;
+bool g_native_portal_published_frame_seen = false;
+std::uint32_t g_last_native_portal_published_frame = 0;
 bool g_asset_available = false;
 bool g_qa_video_active = false;
 bool g_foreign_menu_suspended = false;
@@ -91,6 +104,7 @@ ForeignObjFocusDoubleBuffer g_obj_focus;
 ActiveLowButtonEdge g_cave_a_edge;
 ActiveLowButtonEdge g_combat_a_edge;
 MinishForeignCombatAdapter g_foreign_combat;
+HostSwordSwingPresentation g_host_sword_swing;
 bool g_combat_frame_seen = false;
 std::uint32_t g_last_combat_frame = 0;
 bool g_locomotion_frame_seen = false;
@@ -105,9 +119,6 @@ MinishRollMotionAccumulator g_roll_motion;
 // source frames.
 bool g_lifecycle_frame_seen = false;
 std::uint32_t g_last_lifecycle_frame = 0;
-bool g_inactive_entry_frame_seen = false;
-std::uint32_t g_last_inactive_entry_frame = 0;
-bool g_inactive_entry_ready_processed = false;
 bool g_presentation_restore_pending = false;
 // Recoverable active-session failures must retain the last immutable Zelda
 // PPU publication rather than revealing native Minish underneath. Frozen
@@ -122,6 +133,44 @@ std::uint64_t g_seen_native_restore_generation = 0;
 
 std::int16_t read_guest_s16(std::uint32_t address) {
     return static_cast<std::int16_t>(bus_read_u16(address));
+}
+
+void clear_native_portal_overlay() {
+    gba_mod_clear_foreign_screen_overlay();
+}
+
+bool publish_native_portal_overlay(std::uint32_t source_frame,
+                                   std::int16_t room_origin_x,
+                                   std::int16_t room_origin_y) {
+    // A native-world portal must never survive into a foreign frame or menu.
+    if (!g_asset_available || g_qa_room.active() || g_foreign_menu_suspended) {
+        clear_native_portal_overlay();
+        return false;
+    }
+    const auto* frame = g_native_portal_renderer.next(
+        read_guest_s16(kRoomScrollX), read_guest_s16(kRoomScrollY),
+        room_origin_x, room_origin_y, source_frame);
+    GbaForeignScreenOverlay& overlay =
+        g_native_portal_overlays[g_next_native_portal_overlay];
+    overlay = {
+        GBA_FOREIGN_SCREEN_OVERLAY_ABI_VERSION,
+        frame->pixels.data(),
+        frame->alpha_q4.data(),
+        frame->screen.x,
+        frame->screen.y,
+        kMinishPortalWidth,
+        kMinishPortalHeight,
+        kMinishPortalWidth,
+        0,
+        0,
+    };
+    if (gba_mod_publish_foreign_screen_overlay(kZelda1ForeignWorldPluginId,
+                                               &overlay) == 0) {
+        clear_native_portal_overlay();
+        return false;
+    }
+    g_next_native_portal_overlay ^= 1u;
+    return true;
 }
 
 struct HudOamMask { std::uint64_t lo = 0, hi = 0; };
@@ -167,26 +216,31 @@ bool publish_current_foreign_video() {
     if (!g_overworld_session.loaded()) return false;
     const auto level1 = g_level1_adapter.presentation();
     const bool level1_active = level1.active && level1.framebuffer;
-    const auto* const background = level1_active ? level1.framebuffer->data()
-                                                 : g_overworld_session.framebuffer().data();
+    const auto* const source_background = level1_active ? level1.framebuffer->data()
+                                                        : g_overworld_session.framebuffer().data();
     const auto overworld_feet = g_overworld_session.presentation_feet_position();
     const auto cave_position = g_overworld_session.cave_presentation_position();
+    const std::int16_t destination_feet_x =
+        level1_active ? static_cast<std::int16_t>(level1.player.x +
+                                                   kZelda1LinkFeetOffsetX) :
+        (cave_position ? cave_position->x : overworld_feet.x);
+    // Level1PlayerPresentation is the source 16x16 sprite anchor used by
+    // its host controller. The ABI destination is explicitly Link's feet,
+    // so use the source sprite's bottom center (+$08,+$10); Z_07's ObjY+$0b
+    // collision sample is five pixels above that visual anchor.
+    const std::int16_t destination_feet_y =
+        level1_active ? static_cast<std::int16_t>(level1.player.y +
+                                                   kZelda1LinkFeetOffsetY) :
+        (cave_position ? cave_position->y : overworld_feet.y);
+    const auto* const background = g_host_sword_swing.compose(
+        source_background, destination_feet_x, destination_feet_y);
     const HudOamMask hud_mask = read_live_hud_oam_mask();
     const auto* focus = g_obj_focus.next(
         static_cast<std::int16_t>(read_guest_s16(kPlayerFeetX) -
                                   read_guest_s16(kRoomScrollX)),
         static_cast<std::int16_t>(read_guest_s16(kPlayerFeetY) -
                                   read_guest_s16(kRoomScrollY)),
-        level1_active ? static_cast<std::int16_t>(level1.player.x +
-                                                   kZelda1LinkFeetOffsetX) :
-            (cave_position ? cave_position->x : overworld_feet.x),
-        // Level1PlayerPresentation is the source 16x16 sprite anchor used by
-        // its host controller. The ABI destination is explicitly Link's feet,
-        // so use the source sprite's bottom center (+$08,+$10); Z_07's
-        // ObjY+$0b collision sample is five pixels above that visual anchor.
-        level1_active ? static_cast<std::int16_t>(level1.player.y +
-                                                   kZelda1LinkFeetOffsetY) :
-            (cave_position ? cave_position->y : overworld_feet.y),
+        destination_feet_x, destination_feet_y,
         bus_read_u16(kPlayerSpriteVramOffset), kPlayerShadowObjTile,
         (bus_read_u8(kPlayerDraw) & 0x30u) != 0 ? 1u : 0u,
         hud_mask.lo, hud_mask.hi);
@@ -220,6 +274,10 @@ void enter_qa_video() {
     // The PPU reads immutable session pixels and a data-only Link focus
     // descriptor during its normal composition. No guest VRAM, OAM, entity,
     // input, or coordinate bytes are touched.
+    // The native field portal is a separate compositor layer. Clear it before
+    // committing a Zelda background; the PPU also suppresses it defensively
+    // while a foreign background exists.
+    clear_native_portal_overlay();
     g_obj_focus.reset();
     g_cave_a_edge.reset();
     g_combat_a_edge.reset();
@@ -245,6 +303,7 @@ void leave_qa_video(bool reset_trigger) {
     g_cave_a_edge.reset();
     g_combat_a_edge.reset();
     g_foreign_combat.reset();
+    g_host_sword_swing.reset();
     g_level1_adapter.reset();
     // A failed publish/restore must not leave the trigger latched active:
     // that would clear Zelda pixels now yet prevent the documented portal
@@ -252,15 +311,17 @@ void leave_qa_video(bool reset_trigger) {
     // state machine already made the trigger inactive and must retain its
     // latch until the user releases, preventing a held chord from reentering.
     if (reset_trigger) g_qa_room.reset();
+    g_native_portal.reset();
     g_combat_frame_seen = false;
     g_locomotion_frame_seen = false;
-    g_inactive_entry_frame_seen = false;
-    g_inactive_entry_ready_processed = false;
     g_presentation_restore_pending = false;
     g_foreign_session_frozen = false;
     g_last_published_background = nullptr;
     g_last_published_focus = nullptr;
     foreign_world_native_state().set_zelda1_presentation_active(false);
+    // Do not publish immediately: the next fully-ready native update owns the
+    // portal redraw, so an exit cannot place an overlay in a stale room/menu.
+    clear_native_portal_overlay();
 }
 
 void freeze_active_foreign_session() {
@@ -277,6 +338,12 @@ void freeze_active_foreign_session() {
 // while the host's own pause subtask owns all menu input, graphics, and actions.
 // In particular this does not reset, serialize, or otherwise alter Zelda state.
 int observe_init_pause_menu(std::uint32_t, int, ArmCpuState*) {
+    // This hook applies to both native and foreign menus. A cached field portal
+    // must not sit over the pause menu while GameMain skips UpdateEntities.
+    clear_native_portal_overlay();
+    // A held A while native menu input owns the game must not become an
+    // immediate portal interaction at the first post-menu UpdateEntities.
+    g_native_portal.reset();
     if (!g_asset_available || g_foreign_menu_suspended || !g_qa_room.active() ||
         !g_qa_video_active || !g_overworld_session.loaded())
         return 0;
@@ -320,6 +387,8 @@ bool apply_pending_native_restore() {
     g_cave_a_edge.reset();
     g_combat_a_edge.reset();
     g_foreign_combat.reset();
+    g_native_portal.reset();
+    g_host_sword_swing.reset();
     g_combat_frame_seen = false;
     g_locomotion_frame_seen = false;
     g_qa_room.restore_active(native.zelda1_presentation_active());
@@ -331,14 +400,13 @@ bool apply_pending_native_restore() {
     g_foreign_menu_suspended = false;
     g_presentation_restore_pending = native.zelda1_presentation_active();
     g_foreign_session_frozen = false;
-    g_inactive_entry_frame_seen = false;
-    g_inactive_entry_ready_processed = false;
     if (!g_presentation_restore_pending) {
         g_obj_focus.reset();
         g_last_published_background = nullptr;
         g_last_published_focus = nullptr;
         gba_mod_clear_foreign_obj_focus();
         gba_mod_clear_foreign_background();
+        clear_native_portal_overlay();
     }
     // Do not consume a restore generation before every validation and session
     // mutation has succeeded. A failed restore remains visibly frozen in its
@@ -368,6 +436,19 @@ void tick_foreign_combat_once(std::uint16_t keyinput) {
     // held A cannot become a synthetic rising edge merely by entering OW66.
     // This remains a read-only KEYINPUT observation.
     const bool selected_sword_edge = g_combat_a_edge.observe(keyinput, kGbaKeyA);
+    // Zelda-origin swords intentionally never manufacture a Minish ItemSword,
+    // so native A produces no guest animation when Link has no native sword.
+    // Give the selected exact-origin host sword a short compositor-only swing
+    // instead. It has no bus write and the existing adapters retain all hit
+    // policy. A source ItemSword remains visually owned by Minish.
+    g_host_sword_swing.advance();
+    if (selected_sword_edge && !is_active_minish_sword(sword) &&
+        resolve_foreign_sword(foreign_world_native_state().inventory(), LoadoutId::A)) {
+        auto facing = foreign_sword_facing(bus_read_u8(kPlayerAnimationState));
+        if (!facing)
+            facing = foreign_sword_facing_from_direction(bus_read_u8(kPlayerDirection));
+        if (facing) g_host_sword_swing.begin(*facing);
+    }
     if (g_level1_adapter.active()) {
         // Aquamentus receives only the existing source-observed Minish sword
         // edge. This path reads guest state but creates no guest entity or
@@ -392,7 +473,8 @@ void tick_foreign_combat_once(std::uint16_t keyinput) {
         true, g_foreign_survival_safe, source_position.room_id,
         static_cast<std::uint8_t>(source_position.obj_x),
         static_cast<std::uint8_t>(source_position.obj_y), sword, LoadoutId::A,
-        selected_sword_edge, bus_read_u8(kPlayerAnimationState)};
+        selected_sword_edge, bus_read_u8(kPlayerAnimationState),
+        bus_read_u8(kPlayerDirection)};
     const auto events = g_foreign_combat.tick(
         input, &foreign_world_native_state().inventory(),
         g_overworld_session.octoroks());
@@ -622,7 +704,7 @@ int observe_update_entities(std::uint32_t, int, ArmCpuState*) {
                 // readiness or locomotion): a release clears a prior entry
                 // latch, and a subsequent held chord can intentionally leave
                 // even if the compositor refuses every retry.
-                if (g_qa_room.update(false, true, bus_read_u16(0x04000130)) ==
+                if (g_qa_room.update(true, bus_read_u16(0x04000130)) ==
                     QaRoomEvent::ExitedByTrigger)
                     leave_qa_video(false);
             }
@@ -643,11 +725,6 @@ int observe_update_entities(std::uint32_t, int, ArmCpuState*) {
         if (active_lease) {
             g_lifecycle_frame_seen = true;
             g_last_lifecycle_frame = frame;
-        } else if (!g_inactive_entry_frame_seen ||
-                   g_last_inactive_entry_frame != frame) {
-            g_inactive_entry_frame_seen = true;
-            g_last_inactive_entry_frame = frame;
-            g_inactive_entry_ready_processed = false;
         }
         // Build the complete source-mapped, read-only gate for the intended
         // South Hyrule Field portal (area 3, room 1). It rejects cutscenes,
@@ -673,11 +750,11 @@ int observe_update_entities(std::uint32_t, int, ArmCpuState*) {
             normal_player_ready ? NormalControlGate::VerifiedNormal
                                      : NormalControlGate::Unknown,
         });
-        // Entry requires the whole source-mapped normal-control gate. Each
-        // duplicate hook phase is evaluated independently, but only the first
-        // Ready phase in one gRoomTransition.frameCount can add a chord
-        // heartbeat. A transient first phase therefore cannot hide a stable
-        // later phase, while two ready callbacks cannot halve activation time.
+        // Entry requires the whole source-mapped normal-control gate and a
+        // source-world proximity + released-then-A interaction. The portal
+        // controller observes both callback phases so a press caught in a
+        // transient first phase remains available to its stable peer without
+        // ever allowing duplicate entry.
         // Once active, transient native state can never dismiss the session.
         // The active-world lease survives every native action/lifecycle
         // sample. This foreign world has no implicit safety exit: only the
@@ -710,23 +787,35 @@ int observe_update_entities(std::uint32_t, int, ArmCpuState*) {
         }
         QaRoomEvent qa_event = QaRoomEvent::None;
         if (active_lease) {
-            qa_event = g_qa_room.update(g_portal_tracker.state().ready(),
-                                        survival_safe, keyinput);
-        } else if ((keyinput & kQaChord) != 0) {
-            // A release must reach the edge/latch state machine even when
-            // this phase fails the source readiness gate.  It consumes no
-            // activation heartbeat, but it permits an explicit exit to be
-            // followed by a later portal entry and clears a partial hold.
-            qa_event = g_qa_room.update(false, survival_safe, keyinput);
-        } else if (!g_inactive_entry_ready_processed) {
+            clear_native_portal_overlay();
+            qa_event = g_qa_room.update(survival_safe, keyinput);
+        } else {
             const bool entry_ready = g_portal_tracker.state().ready();
-            if (entry_ready)
-                qa_event = g_qa_room.update(true, survival_safe, keyinput);
-            // `Ready` is a complete exact guest-state predicate, not a
-            // partial optimistic sample. Mark this source frame only after a
-            // valid phase has consumed its one possible heartbeat; an
-            // unready phase remains transparent to a later valid one.
-            if (entry_ready) g_inactive_entry_ready_processed = true;
+            const auto portal_event = g_native_portal.observe({
+                entry_ready,
+                frame,
+                read_guest_s16(kPlayerFeetX),
+                read_guest_s16(kPlayerFeetY),
+                read_guest_s16(kRoomControlsOriginX),
+                read_guest_s16(kRoomControlsOriginY),
+                keyinput,
+            });
+            if (entry_ready) {
+                if (publish_native_portal_overlay(
+                        frame, read_guest_s16(kRoomControlsOriginX),
+                        read_guest_s16(kRoomControlsOriginY))) {
+                    g_native_portal_published_frame_seen = true;
+                    g_last_native_portal_published_frame = frame;
+                }
+            } else if (!g_native_portal_published_frame_seen ||
+                       g_last_native_portal_published_frame != frame) {
+                clear_native_portal_overlay();
+            }
+            if (portal_event == MinishPortalEvent::Entered) {
+                clear_native_portal_overlay();
+                g_qa_room.enter();
+                qa_event = QaRoomEvent::Entered;
+            }
         }
         switch (qa_event) {
         case QaRoomEvent::Entered:
@@ -757,6 +846,14 @@ int observe_update_entities(std::uint32_t, int, ArmCpuState*) {
     return 0;  // Observe only: always continue through UpdateEntities.
 }
 
+// A room transition begins after UpdateEntities in the native source order.
+// Remove the native-only compositor layer at that precise boundary: it has no
+// guest side effects and the next eligible room observation may republish it.
+int observe_exit_transition(std::uint32_t, int, ArmCpuState*) {
+    clear_native_portal_overlay();
+    return 0;
+}
+
 int replace_player_linear_move(std::uint32_t, int, ArmCpuState* cpu) {
     if (g_asset_available && !apply_pending_native_restore()) {
         freeze_active_foreign_session();
@@ -782,6 +879,11 @@ void reset_smith_yard_readiness_plugin() {
     g_tracker.reset();
     g_portal_tracker.reset();
     g_qa_room.reset();
+    g_native_portal.reset();
+    g_native_portal_renderer.reset();
+    g_native_portal_overlays = {};
+    g_next_native_portal_overlay = 0;
+    g_native_portal_published_frame_seen = false;
     // A reset recreates the bus/PPU before the mod callback is invoked, so
     // restoring old VRAM here would be invalid.  The next session begins
     // inactive; normal exit is handled by leave_qa_video().
@@ -790,6 +892,7 @@ void reset_smith_yard_readiness_plugin() {
     // the raw background/focus addresses must never dangle during reset.
     gba_mod_clear_foreign_obj_focus();
     gba_mod_clear_foreign_background();
+    clear_native_portal_overlay();
     g_qa_video_active = false;
     g_foreign_menu_suspended = false;
     g_foreign_survival_safe = false;
@@ -799,11 +902,10 @@ void reset_smith_yard_readiness_plugin() {
     g_cave_a_edge.reset();
     g_combat_a_edge.reset();
     g_foreign_combat.reset();
+    g_host_sword_swing.reset();
     g_combat_frame_seen = false;
     g_locomotion_frame_seen = false;
     g_lifecycle_frame_seen = false;
-    g_inactive_entry_frame_seen = false;
-    g_inactive_entry_ready_processed = false;
     g_presentation_restore_pending = false;
     g_foreign_session_frozen = false;
     g_last_published_background = nullptr;
@@ -829,10 +931,15 @@ void activate_smith_yard_readiness_plugin() {
     g_asset_available = false;
     g_overworld_session = {};
     g_level1_adapter.reset();
+    g_host_sword_swing.reset();
     g_foreign_menu_suspended = false;
+    g_native_portal.reset();
+    g_native_portal_renderer.reset();
+    g_native_portal_overlays = {};
+    g_next_native_portal_overlay = 0;
+    g_native_portal_published_frame_seen = false;
+    clear_native_portal_overlay();
     g_lifecycle_frame_seen = false;
-    g_inactive_entry_frame_seen = false;
-    g_inactive_entry_ready_processed = false;
     g_foreign_session_frozen = false;
     g_last_published_background = nullptr;
     g_last_published_focus = nullptr;
@@ -881,6 +988,9 @@ GBA_MOD_CONSTRUCTOR(minish_register_zelda1_foreign_world_plugin) {
         kZelda1ForeignWorldPluginId, 0x03005F40u, 0, observe_update_entities);
     (void)gba_mod_register_function_entry_plugin(
         kZelda1ForeignWorldPluginId, kInitPauseMenu, 1, observe_init_pause_menu);
+    (void)gba_mod_register_function_entry_plugin(
+        kZelda1ForeignWorldPluginId, kDoExitTransition, 1,
+        observe_exit_transition);
     (void)gba_mod_register_function_entry_plugin(
         kZelda1ForeignWorldPluginId, kLinearMoveDirectionOld, 1,
         replace_player_linear_move);

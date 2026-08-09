@@ -52,6 +52,9 @@ struct ForeignCombatInput {
   // only for the selected-inventory host edge when no ItemSword is active;
   // an active ItemSword retains its source-snapshotted facing instead.
   std::uint8_t player_animation_state{};
+  // Entity::direction is the source 0..31 LinearMoveDirectionOLD domain.
+  // It is the host sword's fallback during transient walking animations.
+  std::uint8_t player_direction{};
 };
 
 struct ForeignCombatEvents {
@@ -75,6 +78,8 @@ struct ForeignCombatEvents {
 [[nodiscard]] bool is_active_minish_sword(const MinishSwordSample& sample);
 [[nodiscard]] std::optional<ForeignSwordFacing> foreign_sword_facing(
     std::uint8_t player_animation_state);
+[[nodiscard]] std::optional<ForeignSwordFacing> foreign_sword_facing_from_direction(
+    std::uint8_t direction);
 [[nodiscard]] ForeignSwordHitbox foreign_sword_hitbox(
     std::uint8_t source_x, std::uint8_t source_y, ForeignSwordFacing facing);
 
