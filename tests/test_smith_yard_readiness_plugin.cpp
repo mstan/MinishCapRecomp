@@ -390,10 +390,12 @@ extern "C" void bus_write_u16(std::uint32_t, std::uint16_t) { ++g_bus_write_coun
 
 bool enter_portal(ArmCpuState* cpu) {
     if (!cpu) return false;
+    // Match the approved F0 playtest: feet meet the visible rift from 23px
+    // below its artwork/bottom anchor, rather than requiring a hidden centre.
     g_player_feet_x = static_cast<std::int16_t>(g_room_origin_x +
                                                 z1::kMinishPortalAnchorLocalX);
     g_player_feet_y = static_cast<std::int16_t>(g_room_origin_y +
-                                                z1::kMinishPortalAnchorLocalY);
+                                                z1::kMinishPortalAnchorLocalY + 23);
     // First source frame arms the release gate and visibly publishes the native
     // portal. The next new A press is the only native-world entry action.
     g_keyinput = 0x03ff;

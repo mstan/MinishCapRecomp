@@ -15,15 +15,21 @@ inline constexpr std::uint16_t kMinishPortalHeight = 40;
 // South Hyrule Field local coordinates. This is the open white-flower patch
 // in front-left of Link's house—not the house door/warp at (0x290,0x188).
 // In the F0 source frame its overlay is screen (78,58)..(110,98), about 26px
-// left and 23px in front of Link's feet. Its 12px interaction square is
-// (0x244..0x25c, 0x1ac..0x1c4), safely outside the source house-warp rectangle
-// (0x282..0x29e, 0x182..0x18e). The live plugin derives its absolute world
+// left and 23px in front of Link's feet. Its approach rectangle is
+// (0x238..0x268, 0x18c..0x1d0), safely outside the source house-warp rectangle
+// (0x282..0x29e, 0x182..0x18e). The visible rift occupies x +/-16 and y -40..0;
+// this intentional approach rectangle gives Link 24px below/alongside it to
+// press A without turning its invisible bottom anchor into a precision test.
+// The live plugin derives its absolute world
 // point by adding gRoomControls.origin_x/y before comparing with Entity x/y.
 inline constexpr std::int16_t kMinishPortalAnchorLocalX = 0x250;
 inline constexpr std::int16_t kMinishPortalAnchorLocalY = 0x1b8;
-// This is deliberately an interaction half-extent, not a guest collision
-// shape. Native Minish collision remains entirely source-owned.
-inline constexpr std::int16_t kMinishPortalInteractionHalfExtent = 12;
+// This is deliberately an interaction shape, not a guest collision shape.
+// Native Minish collision remains entirely source-owned.
+inline constexpr std::int16_t kMinishPortalInteractionWest = 24;
+inline constexpr std::int16_t kMinishPortalInteractionEast = 24;
+inline constexpr std::int16_t kMinishPortalInteractionNorth = 44;
+inline constexpr std::int16_t kMinishPortalInteractionSouth = 24;
 inline constexpr std::uint16_t kMinishPortalTransparent = 0x7c1f;
 
 struct MinishPortalWorldPosition {

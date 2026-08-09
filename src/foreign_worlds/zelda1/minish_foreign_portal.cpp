@@ -1,7 +1,5 @@
 #include "foreign_worlds/zelda1/minish_foreign_portal.h"
 
-#include <cstdlib>
-
 namespace minish::foreign_world::zelda1 {
 namespace {
 
@@ -16,8 +14,6 @@ constexpr std::uint16_t kPortalViolet = bgr(26, 9, 28);
 constexpr std::uint16_t kPortalWhite = bgr(31, 31, 31);
 
 constexpr std::uint16_t kGbaKeyA = 1u << 0;
-
-int abs_int(int value) { return value < 0 ? -value : value; }
 
 }  // namespace
 
@@ -44,10 +40,12 @@ bool minish_portal_contains(std::int16_t player_world_x,
                             std::int16_t room_origin_x,
                             std::int16_t room_origin_y) {
     const auto world = minish_portal_world_position(room_origin_x, room_origin_y);
-    return abs_int(static_cast<int>(player_world_x) - world.x) <=
-               kMinishPortalInteractionHalfExtent &&
-           abs_int(static_cast<int>(player_world_y) - world.y) <=
-               kMinishPortalInteractionHalfExtent;
+    const int dx = static_cast<int>(player_world_x) - world.x;
+    const int dy = static_cast<int>(player_world_y) - world.y;
+    return dx >= -kMinishPortalInteractionWest &&
+           dx <= kMinishPortalInteractionEast &&
+           dy >= -kMinishPortalInteractionNorth &&
+           dy <= kMinishPortalInteractionSouth;
 }
 
 MinishPortalEvent MinishForeignPortalController::observe(
