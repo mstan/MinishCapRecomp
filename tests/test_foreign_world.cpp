@@ -241,12 +241,83 @@ int test_inventory_and_serialization() {
     return 0;
 }
 
+int test_cross_world_inventory_use_resolution() {
+    fw::InventoryCore inventory;
+    std::string error;
+    const fw::CrossWorldItemId native_bomb{fw::WorldId::Native, 42};
+    const fw::CrossWorldItemId zelda_bomb{fw::WorldId::Zelda1, 42};
+    const fw::ItemTraits native_traits{
+        2, {fw::WorldId::Native, 0x701}, fw::ItemUseKind::Consume,
+        fw::ResourcePoolProvenance::Native};
+    const fw::ItemTraits zelda_traits{
+        5, {fw::WorldId::Zelda1, 0x701}, fw::ItemUseKind::Consume,
+        fw::ResourcePoolProvenance::Zelda1};
+
+    // Equal numeric item IDs are separate acquisition keys. Reacquiring the
+    // Native ID may add a Quest flag, but it cannot replace its behavior with
+    // Zelda's trait record.
+    if (!inventory.acquire_item(native_bomb, fw::OwnershipFlags::Owned,
+                                fw::Capability::Bomb, native_traits, &error) ||
+        !inventory.acquire_item(zelda_bomb,
+                                fw::OwnershipFlags::Owned | fw::OwnershipFlags::Quest,
+                                fw::Capability::Bomb, zelda_traits, &error) ||
+        !inventory.acquire_item(native_bomb,
+                                fw::OwnershipFlags::Owned | fw::OwnershipFlags::Quest,
+                                fw::Capability::Bomb, native_traits, &error) ||
+        inventory.acquire_item(native_bomb, fw::OwnershipFlags::Owned,
+                               fw::Capability::Bomb, zelda_traits, &error)) {
+        return fail("origin-qualified acquisition did not preserve distinct records");
+    }
+    if (!fw::has_flag(inventory.ownership(native_bomb), fw::OwnershipFlags::Quest) ||
+        !fw::has_flag(inventory.ownership(zelda_bomb), fw::OwnershipFlags::Quest) ||
+        inventory.traits(native_bomb) != native_traits ||
+        inventory.traits(zelda_bomb) != zelda_traits) {
+        return fail("same-number acquisition collapsed origin-qualified flags or traits");
+    }
+
+    // Both origins can appear in one loadout; use dispatch deliberately has no
+    // active-world parameter, so a native adapter and Zelda adapter receive
+    // the same exact identities rather than a world-filtered item number.
+    if (!inventory.set_loadout_slot(fw::LoadoutId::A, 0, native_bomb, &error) ||
+        !inventory.set_loadout_slot(fw::LoadoutId::A, 1, zelda_bomb, &error)) {
+        return fail("cross-world loadout selection rejected an owned exact key");
+    }
+    const auto native_use = inventory.resolve_loadout_use(fw::LoadoutId::A, 0);
+    const auto zelda_use = inventory.resolve_loadout_use(fw::LoadoutId::A, 1);
+    if (!native_use || !zelda_use || native_use->acquired_id != native_bomb ||
+        zelda_use->acquired_id != zelda_bomb ||
+        native_use->behavior_id != native_traits.behavior_id ||
+        zelda_use->behavior_id != zelda_traits.behavior_id ||
+        native_use->resource_pool != fw::ResourcePoolProvenance::Native ||
+        zelda_use->resource_pool != fw::ResourcePoolProvenance::Zelda1 ||
+        inventory.resolve_loadout_use(fw::LoadoutId::A, fw::kLoadoutSlots)) {
+        return fail("cross-world use did not retain exact behavior/resource provenance");
+    }
+
+    inventory.native_resources().bombs = 3;
+    inventory.zelda1_resources().bombs = 9;
+    auto* native_pool = inventory.resource_pool_for(native_use->resource_pool);
+    auto* zelda_pool = inventory.resource_pool_for(zelda_use->resource_pool);
+    if (!native_pool || !zelda_pool || native_pool == zelda_pool ||
+        inventory.resource_pool_for(fw::ResourcePoolProvenance::None) != nullptr) {
+        return fail("resource provenance returned an implicit or shared pool");
+    }
+    --native_pool->bombs;  // Native behavior is selected in the shared loadout.
+    --zelda_pool->bombs;   // Zelda behavior is selected in that same loadout.
+    if (inventory.native_resources().bombs != 2 ||
+        inventory.zelda1_resources().bombs != 8) {
+        return fail("cross-world item use silently shared resource pools");
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
     if (const int result = test_registry_and_proof_world()) return result;
     if (const int result = test_lifecycle_rollback()) return result;
     if (const int result = test_inventory_and_serialization()) return result;
+    if (const int result = test_cross_world_inventory_use_resolution()) return result;
     std::cout << "Foreign-world registry, dual-origin inventory, and safe save format passed\n";
     return 0;
 }

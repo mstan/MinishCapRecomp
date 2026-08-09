@@ -66,9 +66,23 @@ add_executable(MinishCapRecomp
     src/main.cpp
     src/game_config.cpp
     src/minish_extended_view.cpp
+    src/foreign_worlds/foreign_world.cpp
+    src/foreign_worlds/foreign_world_native_state.cpp
     src/mods/minish_adaptive_view_plugin.cpp
     src/mods/minish_zelda1_foreign_world_plugin.cpp
     src/foreign_worlds/zelda1/smith_yard_readiness.cpp
+    src/foreign_worlds/zelda1/smith_yard_qa_room.cpp
+    src/foreign_worlds/zelda1/minish_portal_readiness.cpp
+    src/foreign_worlds/zelda1/minish_linear_move_adapter.cpp
+    src/foreign_worlds/zelda1/minish_foreign_combat_adapter.cpp
+    # The live temporary seam reads only the user's already validated iNES
+    # asset and renders OW77 once during activation; no importer cache or
+    # guest VRAM path is involved.
+    src/foreign_worlds/zelda1/zelda1_first_quest_data.cpp
+    src/foreign_worlds/zelda1/zelda1_level1_session.cpp
+    src/foreign_worlds/zelda1/zelda1_level1_live_adapter.cpp
+    src/foreign_worlds/zelda1/zelda1_cave_control.cpp
+    src/foreign_worlds/zelda1/zelda1_live_frame_loader.cpp
     ${MINISH_GENERATED_SOURCES}
 )
 
@@ -154,6 +168,19 @@ if(BUILD_TESTING)
         minish_foreign_world_core)
     add_test(NAME minish_foreign_world COMMAND minish_foreign_world_test)
 
+    add_executable(minish_foreign_world_native_state_test
+        tests/test_foreign_world_native_state.cpp
+        src/foreign_worlds/foreign_world.cpp
+        src/foreign_worlds/foreign_world_native_state.cpp)
+    target_include_directories(minish_foreign_world_native_state_test PRIVATE
+        src
+        "${GBARECOMP_ROOT}/src/debug"
+        "${GBARECOMP_ROOT}/src/runtime")
+    target_link_libraries(minish_foreign_world_native_state_test PRIVATE
+        gbarecomp_debug)
+    add_test(NAME minish_foreign_world_native_state
+        COMMAND minish_foreign_world_native_state_test)
+
     add_library(minish_zelda1_first_quest_data STATIC
         src/foreign_worlds/zelda1/zelda1_first_quest_data.cpp)
     target_include_directories(minish_zelda1_first_quest_data PUBLIC src)
@@ -164,6 +191,70 @@ if(BUILD_TESTING)
         minish_zelda1_first_quest_data)
     add_test(NAME minish_zelda1_first_quest_data
         COMMAND minish_zelda1_first_quest_data_test)
+
+    add_library(minish_zelda1_level1_session STATIC
+        src/foreign_worlds/zelda1/zelda1_level1_session.cpp)
+    target_include_directories(minish_zelda1_level1_session PUBLIC src)
+    target_link_libraries(minish_zelda1_level1_session PUBLIC
+        minish_zelda1_first_quest_data)
+
+    add_executable(minish_zelda1_level1_session_test
+        tests/test_zelda1_level1_session.cpp)
+    target_link_libraries(minish_zelda1_level1_session_test PRIVATE
+        minish_zelda1_level1_session
+        minish_foreign_world_core)
+    add_test(NAME minish_zelda1_level1_session
+        COMMAND minish_zelda1_level1_session_test)
+
+    add_library(minish_zelda1_level1_live_adapter STATIC
+        src/foreign_worlds/zelda1/zelda1_level1_live_adapter.cpp
+        src/foreign_worlds/zelda1/minish_foreign_combat_adapter.cpp)
+    target_include_directories(minish_zelda1_level1_live_adapter PUBLIC src)
+    target_link_libraries(minish_zelda1_level1_live_adapter PUBLIC
+        minish_zelda1_level1_session
+        minish_zelda1_live_frame_loader
+        minish_foreign_world_core)
+
+    add_executable(minish_zelda1_level1_live_adapter_test
+        tests/test_zelda1_level1_live_adapter.cpp)
+    target_link_libraries(minish_zelda1_level1_live_adapter_test PRIVATE
+        minish_zelda1_level1_live_adapter)
+    add_test(NAME minish_zelda1_level1_live_adapter
+        COMMAND minish_zelda1_level1_live_adapter_test)
+
+    add_library(minish_zelda1_live_frame_loader STATIC
+        src/foreign_worlds/zelda1/zelda1_live_frame_loader.cpp)
+    target_include_directories(minish_zelda1_live_frame_loader PUBLIC src)
+    target_link_libraries(minish_zelda1_live_frame_loader PUBLIC
+        minish_zelda1_first_quest_data)
+
+    add_executable(minish_zelda1_live_frame_loader_test
+        tests/test_zelda1_live_frame_loader.cpp)
+    target_link_libraries(minish_zelda1_live_frame_loader_test PRIVATE
+        minish_zelda1_live_frame_loader
+        minish_foreign_world_core)
+    add_test(NAME minish_zelda1_live_frame_loader
+        COMMAND minish_zelda1_live_frame_loader_test)
+
+    add_library(minish_zelda1_cave_control STATIC
+        src/foreign_worlds/zelda1/zelda1_cave_control.cpp)
+    target_include_directories(minish_zelda1_cave_control PUBLIC src)
+    target_link_libraries(minish_zelda1_cave_control PUBLIC
+        minish_zelda1_first_quest_data)
+
+    # Cave rendering now consumes the extracted Old Man source sprite facts,
+    # whose implementation lives in the pure cave-control component.
+    target_link_libraries(minish_zelda1_live_frame_loader PUBLIC
+        minish_zelda1_cave_control)
+    target_link_libraries(minish_foreign_world_core PUBLIC
+        minish_zelda1_cave_control)
+
+    add_executable(minish_zelda1_cave_control_test
+        tests/test_zelda1_cave_control.cpp)
+    target_link_libraries(minish_zelda1_cave_control_test PRIVATE
+        minish_zelda1_cave_control)
+    add_test(NAME minish_zelda1_cave_control
+        COMMAND minish_zelda1_cave_control_test)
 
     add_library(minish_smith_yard_readiness STATIC
         src/foreign_worlds/zelda1/smith_yard_readiness.cpp)
@@ -176,44 +267,97 @@ if(BUILD_TESTING)
     add_test(NAME minish_smith_yard_readiness
         COMMAND minish_smith_yard_readiness_test)
 
+    add_library(minish_portal_readiness STATIC
+        src/foreign_worlds/zelda1/minish_portal_readiness.cpp)
+    target_include_directories(minish_portal_readiness PUBLIC src)
+
+    add_executable(minish_portal_readiness_test
+        tests/test_minish_portal_readiness.cpp)
+    target_link_libraries(minish_portal_readiness_test PRIVATE
+        minish_portal_readiness)
+    add_test(NAME minish_portal_readiness COMMAND minish_portal_readiness_test)
+
     add_executable(minish_smith_yard_readiness_plugin_test
         tests/test_smith_yard_readiness_plugin.cpp
+        src/foreign_worlds/foreign_world.cpp
+        src/foreign_worlds/foreign_world_native_state.cpp
         src/foreign_worlds/zelda1/smith_yard_readiness.cpp
+        src/foreign_worlds/zelda1/smith_yard_qa_room.cpp
+        src/foreign_worlds/zelda1/minish_portal_readiness.cpp
+        src/foreign_worlds/zelda1/minish_linear_move_adapter.cpp
+        src/foreign_worlds/zelda1/minish_foreign_combat_adapter.cpp
+        src/foreign_worlds/zelda1/zelda1_first_quest_data.cpp
+        src/foreign_worlds/zelda1/zelda1_cave_control.cpp
+        src/foreign_worlds/zelda1/zelda1_live_frame_loader.cpp
+        src/foreign_worlds/zelda1/zelda1_level1_session.cpp
+        src/foreign_worlds/zelda1/zelda1_level1_live_adapter.cpp
         src/mods/minish_zelda1_foreign_world_plugin.cpp
         "${GBARECOMP_ROOT}/src/runtime/mod_function_hooks.cpp")
     target_include_directories(minish_smith_yard_readiness_plugin_test PRIVATE
         src
         "${GBARECOMP_ROOT}/src/runtime"
+        "${GBARECOMP_ROOT}/src/debug"
+        "${GBARECOMP_ROOT}/src/gba"
         "${GBARECOMP_ROOT}/src/armv4t")
+    target_link_libraries(minish_smith_yard_readiness_plugin_test PRIVATE
+        gbarecomp_debug)
     add_test(NAME minish_smith_yard_readiness_plugin
         COMMAND minish_smith_yard_readiness_plugin_test)
 
-    add_executable(minish_preloaded_mods_test
-        tests/test_preloaded_mods.cpp
-        "${GBARECOMP_ROOT}/src/runtime/mod_runtime.cpp"
-        "${GBARECOMP_ROOT}/src/runtime/mod_function_hooks.cpp"
-        "${GBARECOMP_ROOT}/src/runtime/asset_picker.cpp"
-        "${GBARECOMP_ROOT}/src/runtime/host_platform.cpp"
-        "${GBARECOMP_ROOT}/src/gba/crc32.cpp"
-        "${GBARECOMP_ROOT}/src/gba/sha1.cpp"
-        "${GBARECOMP_ROOT}/src/gba/mod_audio.cpp")
-    target_compile_definitions(minish_preloaded_mods_test PRIVATE
-        GBARECOMP_MOD_UI=1)
-    target_include_directories(minish_preloaded_mods_test PRIVATE
-        "${GBARECOMP_ROOT}/src/runtime"
-        "${GBARECOMP_ROOT}/src/armv4t"
+    add_executable(minish_smith_yard_qa_room_test
+        tests/test_smith_yard_qa_room.cpp
+        src/foreign_worlds/zelda1/smith_yard_qa_room.cpp)
+    target_include_directories(minish_smith_yard_qa_room_test PRIVATE src)
+    add_test(NAME minish_smith_yard_qa_room COMMAND minish_smith_yard_qa_room_test)
+
+    add_executable(minish_linear_move_adapter_test
+        tests/test_minish_linear_move_adapter.cpp
+        src/foreign_worlds/zelda1/minish_linear_move_adapter.cpp)
+    target_include_directories(minish_linear_move_adapter_test PRIVATE src)
+    target_include_directories(minish_linear_move_adapter_test PRIVATE
         "${GBARECOMP_ROOT}/src/gba"
-        "${RECOMP_UI_ROOT}/src")
-    if(MINGW OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "MSYS")
-        target_link_libraries(minish_preloaded_mods_test PRIVATE
-            comdlg32 user32 winmm)
+        "${GBARECOMP_ROOT}/src/armv4t")
+    add_test(NAME minish_linear_move_adapter COMMAND minish_linear_move_adapter_test)
+
+    add_executable(minish_foreign_combat_adapter_test
+        tests/test_minish_foreign_combat_adapter.cpp
+        src/foreign_worlds/foreign_world.cpp
+        src/foreign_worlds/zelda1/minish_foreign_combat_adapter.cpp)
+    target_include_directories(minish_foreign_combat_adapter_test PRIVATE src)
+    add_test(NAME minish_foreign_combat_adapter
+        COMMAND minish_foreign_combat_adapter_test)
+
+    # This target exercises the launcher's UI-backed package commit path.  A
+    # UI-off worktree intentionally has no recomp-ui checkout/header, so keep
+    # the rest of the ROM-free and foreign-world test suite buildable there.
+    if(EXISTS "${RECOMP_UI_ROOT}/src/recomp_launcher.h")
+        add_executable(minish_preloaded_mods_test
+            tests/test_preloaded_mods.cpp
+            "${GBARECOMP_ROOT}/src/runtime/mod_runtime.cpp"
+            "${GBARECOMP_ROOT}/src/runtime/mod_function_hooks.cpp"
+            "${GBARECOMP_ROOT}/src/runtime/asset_picker.cpp"
+            "${GBARECOMP_ROOT}/src/runtime/host_platform.cpp"
+            "${GBARECOMP_ROOT}/src/gba/crc32.cpp"
+            "${GBARECOMP_ROOT}/src/gba/sha1.cpp"
+            "${GBARECOMP_ROOT}/src/gba/mod_audio.cpp")
+        target_compile_definitions(minish_preloaded_mods_test PRIVATE
+            GBARECOMP_MOD_UI=1)
+        target_include_directories(minish_preloaded_mods_test PRIVATE
+            "${GBARECOMP_ROOT}/src/runtime"
+            "${GBARECOMP_ROOT}/src/armv4t"
+            "${GBARECOMP_ROOT}/src/gba"
+            "${RECOMP_UI_ROOT}/src")
+        if(MINGW OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "MSYS")
+            target_link_libraries(minish_preloaded_mods_test PRIVATE
+                comdlg32 user32 winmm)
+        endif()
+        add_test(NAME minish_preloaded_mods
+            COMMAND minish_preloaded_mods_test "${MINISH_PRELOADED_MODS}")
     endif()
-    add_test(NAME minish_preloaded_mods
-        COMMAND minish_preloaded_mods_test "${MINISH_PRELOADED_MODS}")
 endif()
 
 if(MSVC)
     target_link_options(MinishCapRecomp PRIVATE /STACK:16777216)
-elseif(MINGW OR WIN32)
+elseif(MINGW OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "MSYS")
     target_link_options(MinishCapRecomp PRIVATE -Wl,--stack,16777216)
 endif()

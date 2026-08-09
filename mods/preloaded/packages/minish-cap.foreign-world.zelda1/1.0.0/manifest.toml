@@ -3,7 +3,7 @@ id = "minish-cap.foreign-world.zelda1"
 version = "1.0.0"
 name = "The Legend of Zelda: First Quest Foreign World"
 author = "mstan"
-description = "Read-only Smith-yard readiness probe for an opt-in Zelda 1 First Quest foreign world."
+description = "Additive South Hyrule Field portal into a source-decoded Zelda 1 First Quest QA vertical slice."
 license = "MIT"
 resolver = "declarative"
 save_compatibility = "shared"
@@ -15,7 +15,7 @@ rom_sha1 = "b4bd50e4131b027c334547b4524e2dbbd4227130"
 [[feature]]
 id = "zelda1-foreign-world"
 name = "Zelda 1 Foreign World"
-description = "Validate a user-owned Zelda 1 USA PRG0 ROM and enable read-only Smith-yard readiness diagnostics."
+description = "Validate a user-owned Zelda 1 USA image, then enable a temporary portal to decoded overworld rooms, the start cave, enemies, and a playable Level 1 route."
 group = "Foreign Worlds"
 default_enabled = false
 
@@ -30,4 +30,4 @@ name = "The Legend of Zelda (USA, PRG0)"
 sha1 = "dab79c84934f9aa5db4e7dad390e5d0c12443fa2"
 size = 131088
 extensions = ["nes"]
-purpose = "User-owned whole iNES image; validated before the read-only foreign-world probe is activated."
+purpose = "User-owned whole iNES image; validated before the mod decodes source overworld, cave, enemy, and Level 1 data into its native PPU BGR555 presentation."

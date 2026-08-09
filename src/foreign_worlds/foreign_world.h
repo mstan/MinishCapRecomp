@@ -193,8 +193,26 @@ struct ZeldaResourcePools {
     constexpr bool operator==(const ZeldaResourcePools&) const = default;
 };
 
+// A use request never reduces an item to a numeric ID. The adapter receives
+// both the acquisition record and its explicit behavior key, then selects the
+// separately persisted pool named by the traits.
+struct ResolvedItemUse {
+    CrossWorldItemId acquired_id{};
+    CrossWorldItemId behavior_id{};
+    ItemUseKind use_kind = ItemUseKind::Passive;
+    ResourcePoolProvenance resource_pool = ResourcePoolProvenance::None;
+
+    constexpr bool operator==(const ResolvedItemUse&) const = default;
+};
+
 class InventoryCore {
 public:
+    // Runtime acquisition is idempotent only for the exact origin-qualified
+    // identity. It never rewrites a previously acquired item's traits,
+    // capabilities, or existing ownership flags.
+    bool acquire_item(CrossWorldItemId id, OwnershipFlags acquisition_flags,
+                      Capability capabilities, ItemTraits traits,
+                      std::string* error = nullptr);
     bool set_item(CrossWorldItemId id, OwnershipFlags ownership,
                   Capability capabilities, ItemTraits traits,
                   std::string* error = nullptr);
@@ -215,6 +233,20 @@ public:
         LoadoutId loadout, Capability capability) const;
     [[nodiscard]] bool has_capability(LoadoutId loadout,
                                       Capability capability) const;
+
+    // A loadout may contain either origin in every world. This resolver has no
+    // active-world argument by design: dispatch is keyed by the persisted
+    // behavior identity and resource-pool provenance, not the world hosting
+    // the current frame.
+    [[nodiscard]] std::optional<ResolvedItemUse> resolve_loadout_use(
+        LoadoutId loadout, std::size_t slot) const;
+
+    // Returns one of the two independent persisted pools. `None` deliberately
+    // has no pool, so callers cannot fall back to an implicit shared bundle.
+    [[nodiscard]] ZeldaResourcePools* resource_pool_for(
+        ResourcePoolProvenance provenance);
+    [[nodiscard]] const ZeldaResourcePools* resource_pool_for(
+        ResourcePoolProvenance provenance) const;
 
     [[nodiscard]] ZeldaResourcePools& zelda1_resources() {
         return zelda1_resources_;

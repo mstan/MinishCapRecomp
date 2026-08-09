@@ -98,6 +98,41 @@ host pointers.
 - Map memory supports 128×128 8-pixel tiles (top `0200B650`, bottom
   `02025EB0`) and therefore comfortably supports a 256×176 foreign room.
 
+### Source-proven South Hyrule Field readiness gate
+
+The first interactive portal is **not** the starting house. The first safe
+controllable-Link gate is the outdoor South Hyrule Field room, area `3`, room
+`1`; the house is area `0x22`, room `0x11` and is both the wrong room and too
+small for the chosen presentation. This is pinned to TMC commit
+`5ab63f00e522ff69c5bc987e379f0163943f2833`: `include/room.h`,
+`include/player.h`, `include/entity.h`, `include/main.h`, `include/message.h`,
+`src/game.c`, `src/code_0805EC04.c`, and `src/playerUtils.c`.
+
+At the `UpdateEntities` observer, construct `MinishPortalReadinessInput` from
+the following **USA guest reads**. Reads are little-endian where wider than a
+byte and must use the emulator-memory API, never host pointer casts.
+
+| Purpose | Symbol / source field | Guest read and accept condition |
+| --- | --- | --- |
+| Correct host room | `gRoomControls.area/room` | `u8 03000BF4 == 3` and `u8 03000BF5 == 1` |
+| Stable game loop | `gMain.substate`; `GAMEMAIN_UPDATE == 2` | `u8 03001004 == 2` |
+| No room exit | `gRoomTransition.transitioningOut` | `u8 030010A8 == 0` |
+| Link entity alive | `gPlayerEntity.base.kind/flags`; `gPlayerState.killed` | `u8 03001168 == PLAYER (1)`; `(u8 03001170 & ENT_DELETED (0x10)) == 0`; `u8 03003FBC == 0`. Player does not use generic `ENT_DID_INIT`; separate normal action/control checks prove initialization. |
+| Link visibly drawable | `gPlayerEntity.base.spriteSettings.draw` | `(u8 03001178 & 3) != 0`; zero is the source-defined disabled draw mode |
+| Link OBJ-focus feet anchor | `gPlayerEntity.base.x/y`; `gRoomControls.scroll_x/y` | Signed Q16.16 high halves `s16 0300118E` / `s16 03001192` minus signed scroll `s16 03000BFA` / `s16 03000BFC`. Source: pinned `Entity` x/y `+0x2C/+0x30`, `RoomControls` scroll `+0x0A/+0x0C`. |
+| Normal physical control | `gPlayerState.controlMode`, `PlayerCanBeMoved()`, `gPlayerEntity.base.action` | `u8 0300400B == CONTROL_ENABLED (0)`; the `u32` at `03003FB0` must have none of PlayerCanBeMoved's lock mask `0x22189B75`; and `u8 0300116C == PLAYER_NORMAL (1)` |
+| Script/macro lock | `gPlayerState.playerInput.playerMacro` | `u32 0300401C == 0`; `UpdatePlayerInput()` uses a non-null macro instead of real input, and script opcode `InitPlayerMacro` sets it |
+| Cutscene/dialogue pause | `PausePlayer`, `gMessage`, `gPriorityHandler` | `(u8 03003F8A & 0x80) == 0`; `(u8 02000050 & MESSAGE_ACTIVE (0x7F)) == 0`; `u16 03003DC8 == 0`. `GameMain_Update()` invokes `PausePlayer()` when a message or priority timer is active. |
+
+`script_or_cutscene_locked` is the OR of the last two rows (and the movement
+lock mask belongs in `normal_player_control`). This conservative contract is
+implemented without guest reads in
+`src/foreign_worlds/zelda1/minish_portal_readiness.{h,cpp}` so its behavior is
+unit-testable; the live plugin must sample the table atomically enough for one
+frame and pass only derived booleans. A later frame revalidates all conditions
+before any interaction. It must not use `GAMEMAIN_MINISHPORTAL` (`4`), which
+TMC explicitly describes as moments after a portal cutscene.
+
 ## Safe first hook allowlist
 
 Start with exact PC equality and only the entries actually enabled by the mod:
@@ -131,4 +166,3 @@ world adapter must pan/crop vertically.
 Foreign state belongs in a versioned runner/plugin sidecar keyed to the active
 Minish save slot. Do not consume unknown `SaveFile` padding: native sectors are
 duplicated, checksummed, and written asynchronously.
-

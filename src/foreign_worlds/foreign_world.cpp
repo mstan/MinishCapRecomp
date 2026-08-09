@@ -277,6 +277,40 @@ bool InventoryCore::set_item(CrossWorldItemId id, OwnershipFlags ownership,
     return true;
 }
 
+bool InventoryCore::acquire_item(CrossWorldItemId id,
+                                 OwnershipFlags acquisition_flags,
+                                 Capability capabilities, ItemTraits traits,
+                                 std::string* error) {
+    if (!has_flag(acquisition_flags, OwnershipFlags::Owned) ||
+        has_flag(acquisition_flags, OwnershipFlags::Equipped)) {
+        set_error(error, "an acquisition must own but cannot equip an item");
+        return false;
+    }
+    if (!valid_world(id.origin) ||
+        !valid_ownership(static_cast<std::uint8_t>(acquisition_flags)) ||
+        !valid_capabilities(static_cast<std::uint32_t>(capabilities)) ||
+        !valid_traits(traits)) {
+        set_error(error, "acquisition has invalid identity, traits, or capability bits");
+        return false;
+    }
+    const auto existing = items_.find(id);
+    if (existing == items_.end()) {
+        if (items_.size() >= kMaxItemRecords) {
+            set_error(error, "foreign inventory has too many item records");
+            return false;
+        }
+        items_.emplace(id, ItemRecord{acquisition_flags, capabilities, traits});
+        return true;
+    }
+    if (existing->second.capabilities != capabilities ||
+        existing->second.traits != traits) {
+        set_error(error, "an acquired exact-origin item cannot change its traits");
+        return false;
+    }
+    existing->second.ownership = existing->second.ownership | acquisition_flags;
+    return true;
+}
+
 OwnershipFlags InventoryCore::ownership(CrossWorldItemId id) const {
     const auto it = items_.find(id);
     return it == items_.end() ? OwnershipFlags::None : it->second.ownership;
@@ -340,6 +374,47 @@ std::vector<CrossWorldItemId> InventoryCore::capability_providers(
 bool InventoryCore::has_capability(LoadoutId loadout,
                                    Capability capability) const {
     return !capability_providers(loadout, capability).empty();
+}
+
+std::optional<ResolvedItemUse> InventoryCore::resolve_loadout_use(
+    LoadoutId loadout, std::size_t slot) const {
+    if (!valid_loadout(loadout) || slot >= kLoadoutSlots) return std::nullopt;
+    const auto& selected = loadouts_[loadout_index(loadout)][slot];
+    if (!selected) return std::nullopt;
+    const auto item = items_.find(*selected);
+    if (item == items_.end() ||
+        !has_flag(item->second.ownership, OwnershipFlags::Owned)) {
+        return std::nullopt;
+    }
+    return ResolvedItemUse{*selected, item->second.traits.behavior_id,
+                           item->second.traits.use_kind,
+                           item->second.traits.resource_pool};
+}
+
+ZeldaResourcePools* InventoryCore::resource_pool_for(
+    ResourcePoolProvenance provenance) {
+    switch (provenance) {
+    case ResourcePoolProvenance::Native:
+        return &native_resources_;
+    case ResourcePoolProvenance::Zelda1:
+        return &zelda1_resources_;
+    case ResourcePoolProvenance::None:
+        return nullptr;
+    }
+    return nullptr;
+}
+
+const ZeldaResourcePools* InventoryCore::resource_pool_for(
+    ResourcePoolProvenance provenance) const {
+    switch (provenance) {
+    case ResourcePoolProvenance::Native:
+        return &native_resources_;
+    case ResourcePoolProvenance::Zelda1:
+        return &zelda1_resources_;
+    case ResourcePoolProvenance::None:
+        return nullptr;
+    }
+    return nullptr;
 }
 
 std::vector<std::uint8_t> InventoryCore::serialize() const {

@@ -39,6 +39,10 @@ build-*/
 build-release/
 release-stage/
 foreign-world-cache/
+qa-artifacts/
+recomp_cache/
+recomp_coverage_*.json
+recomp_master_misses_*.toml.frag
 MinishCapRecomp.exe
 MinishCapRecomp-v*-windows-x64.zip
 MinishCapRecomp-v*-windows-x64.exe

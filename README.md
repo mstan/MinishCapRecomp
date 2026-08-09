@@ -104,6 +104,58 @@ triggers, other screen-space effects, and the hardware OAM limit retain original
 behavior, so they can pop in or assume the 240-pixel viewport. Disable the mod
 to return to faithful presentation.
 
+## Zelda 1 foreign-world QA room
+
+The disabled-by-default **Zelda 1 Foreign World** package requires and
+hash-validates a user-owned Zelda 1 USA PRG0 iNES image before its trusted
+plugin can run. The current entrance remains a deliberately temporary QA seam:
+in South Hyrule Field (area 3, room 1), hold **Up + Down + Left + Right** for
+roughly 18 update calls. Release the buttons after entry; holding the same chord
+again exits to the untouched Minish presentation. The complete source-mapped
+readiness gate rejects transitions, scripts, dialogue, unavailable normal
+control, and hidden or dead Link states.
+
+Inside the foreign world, ordinary D-pad input advances the host-owned Zelda
+position once per Minish source frame through decoded Zelda terrain collision
+and screen edges. The existing Player-only movement hook suppresses native-map
+coordinate movement while active; it never writes guest coordinates. The PPU
+instead applies a bounded data-only focus transform to Link's existing Minish
+OBJ, preserving his native animation, items, sword behavior, OBJ ordering,
+windows, and color effects over the decoded 240x160 BGR555 terrain.
+
+The current playable vertical slice includes source-backed overworld rooms, the
+OW77 Old Man/sword cave, four source-rostered red Octoroks in OW66, and a
+source-room route through First Quest Level 1 to six-HP Aquamentus. Press **A**
+once in the start cave to acknowledge the source dialogue, move to the sword,
+then press **A** again to acquire the exact `Zelda1/01` sword record. Native and
+Zelda-origin items remain distinct, and either origin's selected sword can be
+used by the implemented foreign-world combat adapters. Native and Zelda
+resource pools are also kept separate. Injecting Zelda-origin item behavior
+back into ordinary Minish Cap rooms still awaits a source-proven guest
+equipment boundary.
+
+Deterministic QA routes from the initial OW `$77` position are expressed as
+held D-pad source frames: the start cave is `Left 64, Up 64`; OW `$66` is
+`Up 232, Left 128`; and the Level 1 portal is
+`Up 231, Left 1, Up 24, Left 7, Up 8, Left 1, Up 152, Left 7, Up 8, Left 1,
+Up 152, Right 1, Up 8, Left 1, Up 73, Right 1`. In the start cave, press A to
+acknowledge the dialogue, move Up 21 and Right 8 to the source sword hotspot,
+then press A again. Move down to source Y `$DD` and take one more Down step to
+return to OW `$77`.
+
+This is still an engineering QA slice, not a finished port. Octoroks, drops,
+Aquamentus, and dungeon items use conspicuous host QA markers where NES
+metasprites or drop semantics have not yet been decoded. Level 1 currently uses
+a documented bounded intra-room movement policy, and only the implemented
+rooms, cave, enemy roster, and dungeon route should be treated as playable.
+The compositor deliberately preserves Minish OBJ/window/color-effect rules;
+those guest effects can occlude tiny source cave sprites in a live frame even
+though the direct source renderer and pickup collision retain them. The exact
+QA movement counts above remain the reliable temporary interaction guide.
+Trusted snapshot state covers the cross-world inventory and live overworld,
+cave, and OW66 combat record; ordinary Minish save-file sidecar attachment and
+the final discoverable portal/NPC UI remain later integration work.
+
 ## How it self-improves
 
 `gbarecomp`'s coverage is honest: a path that wasn't statically recompiled is

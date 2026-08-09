@@ -345,6 +345,12 @@ name = "ram_sub_080B1FE8"
 note = "IWRAM copy; source bytes at 0x080B1FE8"
 
 [[extra_func]]
+addr = 0x030065E8
+mode = "arm"
+name = "ram_sub_080B2874"
+note = "IWRAM copy of 0x080B2874; required so the reviewed 0x03006690 adaptive-view immediate override is emitted under strict codegen."
+
+[[extra_func]]
 addr = 0x03005E60
 mode = "arm"
 name = "ram_CheckBits"
@@ -27607,7 +27613,18 @@ note = "build/USA/src/entity.o"
 [[mod_function_hook]]
 addr = 0x0805E5C0
 mode = "thumb"
-note = "Read-only Zelda 1 Smith-yard readiness probe; always declines."
+note = "Zelda 1 Smith-yard temporary QA room lifecycle; observes guest globals and always continues guest code."
+
+[[mod_function_hook]]
+addr = 0x03005F40
+mode = "arm"
+note = "Source-imported ram_UpdateEntities: live Zelda 1 QA trigger/lifecycle observer only; publishes no guest writes."
+
+[[mod_function_hook]]
+addr = 0x080027EA
+mode = "thumb"
+note = "Source-imported LinearMoveDirectionOLD Player-only foreign-session adapter; declines every non-gPlayerEntity call."
+
 
 [[extra_func]]
 addr = 0x0805E5F8
