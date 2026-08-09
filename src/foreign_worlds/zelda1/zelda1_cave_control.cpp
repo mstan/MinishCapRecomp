@@ -59,6 +59,8 @@ bool Zelda1StartCaveControl::load(const FirstQuestData& data) {
   dialogue_acknowledged_ = false;
   dialogue_visible_character_count_ = 0;
   dialogue_frame_delay_ = 0;
+  standing_fire_animation_frame_ = 0;
+  standing_fire_animation_counter_ = kStandingFireFramesPerPhase;
   start_sword_taken_ = false;
   return true;
 }
@@ -97,6 +99,17 @@ bool Zelda1StartCaveControl::tick_dialogue() {
   return false;
 }
 
+bool Zelda1StartCaveControl::tick_standing_fire() {
+  if (!loaded_) return false;
+  // Exact Z_07:AnimateObjectWalking order: DEC first; when it reaches zero,
+  // RollOverAnimCounter stores six and XORs ObjAnimFrame with one.
+  if (--standing_fire_animation_counter_ == 0) {
+    standing_fire_animation_counter_ = kStandingFireFramesPerPhase;
+    standing_fire_animation_frame_ ^= 1;
+  }
+  return true;
+}
+
 bool Zelda1StartCaveControl::restore_dialogue_progress(
     std::uint8_t visible_character_count, std::uint8_t frame_delay) {
   if (!loaded_ || entering_ || dialogue_acknowledged_ ||
@@ -105,6 +118,16 @@ bool Zelda1StartCaveControl::restore_dialogue_progress(
     return false;
   dialogue_visible_character_count_ = visible_character_count;
   dialogue_frame_delay_ = frame_delay;
+  return true;
+}
+
+bool Zelda1StartCaveControl::restore_standing_fire_animation(
+    std::uint8_t animation_frame, std::uint8_t animation_counter) {
+  if (!loaded_ || animation_frame > 1 || animation_counter == 0 ||
+      animation_counter > kStandingFireFramesPerPhase)
+    return false;
+  standing_fire_animation_frame_ = animation_frame;
+  standing_fire_animation_counter_ = animation_counter;
   return true;
 }
 

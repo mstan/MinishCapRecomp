@@ -84,6 +84,13 @@ class Zelda1StartCaveControl {
   // six after each transfer in Z_01:UpdatePersonState_Textbox.
   static constexpr std::uint8_t kFirstQuestStartDialogueGlyphCount = 37;
   static constexpr std::uint8_t kTextboxFramesPerGlyph = 6;
+  // Z_04:UpdateStandingFire calls Z_07:AnimateObjectWalking.  Its counter
+  // rolls over at six updates and toggles ObjAnimFrame, which the up-facing
+  // sprite path uses as its horizontal-flip bit.  A cave entry has no
+  // separate source initialization for those scratch object bytes, so this
+  // standalone host session canonically begins at the source's stable
+  // (frame=0,counter=6) boundary and then follows the exact update cadence.
+  static constexpr std::uint8_t kStandingFireFramesPerPhase = 6;
 
   bool load(const FirstQuestData& data);
 
@@ -95,6 +102,12 @@ class Zelda1StartCaveControl {
   }
   [[nodiscard]] std::uint8_t dialogue_frame_delay() const {
     return dialogue_frame_delay_;
+  }
+  [[nodiscard]] std::uint8_t standing_fire_animation_frame() const {
+    return standing_fire_animation_frame_;
+  }
+  [[nodiscard]] std::uint8_t standing_fire_animation_counter() const {
+    return standing_fire_animation_counter_;
   }
   [[nodiscard]] bool start_sword_taken() const { return start_sword_taken_; }
   [[nodiscard]] CaveSourcePosition position() const { return position_; }
@@ -109,10 +122,16 @@ class Zelda1StartCaveControl {
   // automatically unhalts Link in its own write frame; no A press is
   // required.
   bool tick_dialogue();
+  // Advances the two type-$40 cave bonfires by one source object update.
+  // Both fires are installed together and retain the same canonical phase in
+  // this bounded session; animation is independent of textbox progress.
+  bool tick_standing_fire();
   // Validates/restores an in-flight automatically typed textbox. Used only by
   // the session's failure-atomic snapshot restore path.
   bool restore_dialogue_progress(std::uint8_t visible_character_count,
                                  std::uint8_t frame_delay);
+  bool restore_standing_fire_animation(std::uint8_t animation_frame,
+                                       std::uint8_t animation_counter);
   // Retained for legacy/UI compatibility. Gameplay does not require A: this
   // immediately completes the source text record and unhalts Link.
   bool acknowledge_dialogue();
@@ -131,6 +150,8 @@ class Zelda1StartCaveControl {
   bool dialogue_acknowledged_ = false;
   std::uint8_t dialogue_visible_character_count_ = 0;
   std::uint8_t dialogue_frame_delay_ = 0;
+  std::uint8_t standing_fire_animation_frame_ = 0;
+  std::uint8_t standing_fire_animation_counter_ = kStandingFireFramesPerPhase;
   bool start_sword_taken_ = false;
 };
 

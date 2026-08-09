@@ -34,6 +34,10 @@ struct FirstQuestStartCaveRenderState {
   // Number of non-$25 source character transfers currently visible. This is
   // ignored once the complete nametable result is present.
   std::uint8_t visible_dialogue_characters = 0;
+  // Z_04:UpdateStandingFire forces ObjDir=up, then Z_07 uses the toggled
+  // ObjAnimFrame as the horizontal-flip bit.  It is therefore a two-phase
+  // (normal/mirrored) composition, not a guest-authored fire sprite.
+  std::uint8_t standing_fire_animation_frame = 0;
 };
 
 struct FirstQuestStartCaveDialogueFacts {
@@ -49,6 +53,16 @@ struct FirstQuestStartCaveDialogueFacts {
 };
 
 struct FirstQuestStartCaveFacts {
+  // `InitModeB_Sub5` invokes `FillPlayAreaAttrs` for room $44. Its outer
+  // AttrsA selector fills all play-area attribute bytes, then AttrsB replaces
+  // the inner bytes. `$21A4`/`$21C4` map to PPU attribute byte `$23D9`;
+  // InitModeB transfers PlayAreaAttrs[$09] there, and `$09` is inner. The
+  // textbox therefore uses AttrsB rather than the cave backdrop's AttrsA
+  // selector. The verified First Quest record is selector 2 and the
+  // CaveBgPaletteRowsTransferBuf row is {$0f,$30,$00,$12}.
+  std::uint8_t textbox_background_palette_selector = 2;
+  std::array<std::uint8_t, 4> textbox_background_palette{{0x0f, 0x30, 0x00,
+                                                           0x12}};
   // Z_01.asm:InitCave puts the cave person at ($78,$80). SetupTileObjectOW
   // maps OW77's normal-cave slot zero to object type $6A. ObjAnimations[$6b]
   // -> ObjAnimFrameHeap[$58] selects OAM tile $98. PPUCTRL has 8x16 sprites,
@@ -60,10 +74,9 @@ struct FirstQuestStartCaveFacts {
   bool old_man_visual_is_opaque = false;
   bool old_man_visible_before_sword = true;
   // Z_01.asm:SetUpCommonCaveObjects creates type $40 fires before the item
-  // persistence check. UpdateFire draws frame zero through object animation
-  // descriptor $41: tiles $5c/$5e, sprite palette row 2, at these positions.
-  // The animation cadence beyond this source-proven initial frame is outside
-  // this static renderer.
+  // persistence check. Z_04:UpdateStandingFire draws descriptor frame zero
+  // through object animation $41: tiles $5c/$5e, sprite palette row 2, at
+  // these positions. Its six-frame ObjAnimFrame toggle mirrors the pair.
   std::array<CaveSourcePosition, 2> fire_source_positions{{{0x48, 0x80},
                                                              {0xa8, 0x80}}};
   std::uint8_t fire_left_tile = 0x5c;
@@ -150,7 +163,7 @@ inline void draw_cave_text_tile(OwFramebuffer *out,
                                 std::span<const std::uint8_t> patterns,
                                 std::uint8_t tile, std::uint8_t vram_low,
                                 const std::array<std::uint8_t, 32>& palette,
-                                unsigned playfield_palette) {
+                                unsigned textbox_palette) {
   if (!out || tile >= 0x70 || patterns.size() < (static_cast<std::size_t>(tile) + 1) * 16)
     return;
   // `$21A4` is nametable row 13, column four. The foreign framebuffer crops
@@ -166,9 +179,10 @@ inline void draw_cave_text_tile(OwFramebuffer *out,
       const int x = start_x + static_cast<int>(px);
       const int y = start_y + static_cast<int>(py);
       if (x < 0 || x >= 240 || y < 0 || y >= 160) continue;
-      // NES background color zero is universal; nonzero colors use the cave
-      // room's FillPlayAreaAttrs-selected palette row.
-      const auto nes_color = palette[color == 0 ? 0 : playfield_palette * 4 + color];
+      // NES background color zero is universal. `$21A4` maps to `$23D9`,
+      // which InitModeB fills from inner PlayAreaAttrs[$09], so nonzero
+      // textbox colors use room $44's AttrsB-selected row.
+      const auto nes_color = palette[color == 0 ? 0 : textbox_palette * 4 + color];
       (*out)[y * 240 + x] = nes_to_bgr555(nes_color & 63);
     }
 }
@@ -181,7 +195,8 @@ render_first_quest_start_cave(const FirstQuestData &data,
                               FirstQuestStartCaveRenderState state,
                               OwFramebuffer *out,
                               FirstQuestStartCaveFacts *facts = nullptr) {
-  if (!out || overworld_patterns.size() != kOverworldBackgroundPatternSize)
+  if (!out || overworld_patterns.size() != kOverworldBackgroundPatternSize ||
+      state.standing_fire_animation_frame > 1)
     return false;
   LevelInfoView info{};
   OverworldRoomView cave_palette_room{};
@@ -210,11 +225,14 @@ render_first_quest_start_cave(const FirstQuestData &data,
   std::array<std::uint8_t, 32> pal{};
   for (unsigned i = 0; i < 32; ++i)
     pal[i] = info.palettes_transfer_buffer[3 + i] & 63;
-  // The transfer writes palette entries $08..$0f. FillPlayAreaAttrs in
-  // InitModeB_Sub5 uses room $44's AttrsA low bits for the play area.
+  // The transfer writes palette entries $08..$0f. `FillPlayAreaAttrs` uses
+  // room $44's AttrsA low bits for the outer backdrop and AttrsB low bits
+  // for inner PlayAreaAttrs[$09], which InitModeB transfers to the `$23D9`
+  // attribute byte covering textbox cells `$21A4`/`$21C4`.
   for (unsigned i = 0; i < 8; ++i)
     pal[8 + i] = prg[kCaveBgPaletteTransferPrgOffset + 3 + i] & 63;
   const unsigned playfield_palette = cave_palette_room.attributes.attr_a & 3;
+  const unsigned textbox_palette = cave_palette_room.attributes.attr_b & 3;
   out->fill(nes_to_bgr555(pal[0]));
   for (unsigned ty = 0; ty < kOwPlayfieldTileHeight; ++ty)
     for (unsigned tx = 0; tx < kOwPlayfieldTileWidth; ++tx) {
@@ -257,20 +275,24 @@ render_first_quest_start_cave(const FirstQuestData &data,
                                       old_man.bottom_pattern, old_man.right, true,
                                       old_man.palette)))
     return false;
-  // UpdateFire's initial descriptor frame is a non-flipped OAM pair at ObjX
-  // and ObjX+8. In the source 8x16 mode, its $5c/$5e OAM tiles respectively
-  // consume CHR pairs $5c/$5d and $5e/$5f. It shares sprite palette row 2
-  // with the Old Man. Rendering this verified frame avoids inventing a host
-  // fire animation.
+  // Z_04:UpdateStandingFire uses descriptor frame zero, then
+  // Z_07:AnimateObjectWalking toggles ObjAnimFrame every six updates.
+  // Because the fire's forced direction is up, SetUpWalkingSprites uses that
+  // bit as OAM horizontal flip. Anim_WriteHorizontallyFlippableSpritePair
+  // swaps the left/right 8x16 descriptors when flipped: $5e/$5f comes first
+  // and $5c/$5d second. Palette row two comes from the standing-fire's
+  // `Anim_SetSpriteDescriptorAttributes #$02`, shared with the Old Man.
   const auto fire_left = prg.subspan(32895 + 0x5c * 16, 32);
   const auto fire_right = prg.subspan(32895 + 0x5e * 16, 32);
+  const bool fire_flipped = state.standing_fire_animation_frame != 0;
   for (const CaveSourcePosition fire : FirstQuestStartCaveFacts{}.fire_source_positions) {
-    if (!detail::draw_cave_sprite_8x16(out, fire_left.first(16), fire_left.subspan(16, 16),
-                                        fire, false, old_man.palette) ||
-        !detail::draw_cave_sprite_8x16(
-            out, fire_right.first(16), fire_right.subspan(16, 16),
-            {static_cast<std::uint8_t>(fire.x + 8), fire.y}, false,
-            old_man.palette))
+    const auto first = fire_flipped ? fire_right : fire_left;
+    const auto second = fire_flipped ? fire_left : fire_right;
+    if (!detail::draw_cave_sprite_8x16(out, first.first(16), first.subspan(16, 16),
+                                        fire, fire_flipped, old_man.palette) ||
+        !detail::draw_cave_sprite_8x16(out, second.first(16), second.subspan(16, 16),
+                                        {static_cast<std::uint8_t>(fire.x + 8), fire.y},
+                                        fire_flipped, old_man.palette))
       return false;
   }
   // This narrow 8x16 OAM sprite is source-backed end-to-end: $01 -> slot 0
@@ -307,7 +329,7 @@ render_first_quest_start_cave(const FirstQuestData &data,
     if (glyph == 0x25) continue;
     if (rendered_glyphs >= wanted_glyphs) break;
     detail::draw_cave_text_tile(out, text_patterns, glyph, destination, pal,
-                                playfield_palette);
+                                textbox_palette);
     ++rendered_glyphs;
     const std::uint8_t marker = encoded & 0xc0;
     if (marker == 0) continue;
@@ -315,8 +337,15 @@ render_first_quest_start_cave(const FirstQuestData &data,
     vram_low = dialogue.line_starts[line_index];
     if (marker == 0xc0) break;
   }
-  if (facts)
-    *facts = {};
+  if (facts) {
+    FirstQuestStartCaveFacts candidate{};
+    candidate.textbox_background_palette_selector =
+        static_cast<std::uint8_t>(textbox_palette);
+    std::copy_n(pal.begin() + textbox_palette * 4,
+                candidate.textbox_background_palette.size(),
+                candidate.textbox_background_palette.begin());
+    *facts = candidate;
+  }
   return true;
 }
 

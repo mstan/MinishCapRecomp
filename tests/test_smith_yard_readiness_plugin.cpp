@@ -11,8 +11,10 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <algorithm>
 #include <array>
 #include <iostream>
+#include <memory>
 #include <string>
 
 namespace z1 = minish::foreign_world::zelda1;
@@ -45,6 +47,22 @@ bool same_cpu(const ArmCpuState& left, const ArmCpuState& right) {
     for (unsigned i = 0; i < 16; ++i)
         if (left.R[i] != right.R[i]) return false;
     return left.cpsr == right.cpsr;
+}
+
+bool same_cave_nonfire_pixels(const std::uint16_t* first,
+                              const std::uint16_t* second) {
+    if (!first || !second) return false;
+    constexpr unsigned kWidth = z1::kOwRenderWidth;
+    for (unsigned y = 0; y < z1::kOwRenderHeight; ++y)
+        for (unsigned x = 0; x < kWidth; ++x) {
+            const bool left_fire = x >= 0x48 - 8 && x < 0x48 + 8 &&
+                                   y >= 0x80 - 72 && y < 0x80 - 56;
+            const bool right_fire = x >= 0xa8 - 8 && x < 0xa8 + 8 &&
+                                    y >= 0x80 - 72 && y < 0x80 - 56;
+            if (!left_fire && !right_fire && first[y * kWidth + x] != second[y * kWidth + x])
+                return false;
+        }
+    return true;
 }
 
 struct PortalCrossingProbe {
@@ -480,6 +498,41 @@ int main(int argc, char** argv) {
     if (cave_after_stationary.size() != z1::Zelda1OverworldSession::kSerializedSize ||
         cave_after_stationary[11] != static_cast<std::uint8_t>(z1::OverworldSessionArea::kCave))
         return fail("stationary OW77 mouth did not enter through the plugin observer");
+    // The PPU consumes this pointer directly. Complete the automatic textbox,
+    // then move Right through ordinary UpdateEntities frames: a cave fire
+    // tick must publish a fully rendered *new* buffer while retaining the
+    // former one unchanged through that next update. This is intentionally a
+    // plugin seam test, not a staged renderer call; it covers source movement,
+    // persistence sync, focus publication, and the live pointer lifetime.
+    for (unsigned i = 0;
+         i != z1::Zelda1StartCaveControl::kFirstQuestStartDialogueGlyphCount *
+                  z1::Zelda1StartCaveControl::kTextboxFramesPerGlyph + 1;
+         ++i) {
+        ++g_frame;
+        (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    }
+    if (!g_foreign_background || !g_foreign_focus ||
+        minish::foreign_world::foreign_world_native_state()
+                .zelda1_overworld_session_blob()[16] != 1)
+        return fail("source cave textbox did not remain visibly published before movement");
+    const std::uint16_t* const before_right = g_foreign_background;
+    const auto retained_before_right =
+        std::make_unique<std::array<std::uint16_t, z1::kOwRenderWidth * z1::kOwRenderHeight>>();
+    std::copy_n(before_right, retained_before_right->size(), retained_before_right->begin());
+    const auto focus_x_before_right = g_foreign_focus->destination_link_feet_x;
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~0x0010u); // KEYINPUT Right.
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (!g_foreign_background || !g_foreign_focus ||
+        g_foreign_background == before_right ||
+        !same_cave_nonfire_pixels(retained_before_right->data(), g_foreign_background) ||
+        !same_cave_nonfire_pixels(retained_before_right->data(), before_right) ||
+        g_foreign_focus->destination_link_feet_x != focus_x_before_right + 1 ||
+        minish::foreign_world::foreign_world_native_state()
+                .zelda1_overworld_session_blob()[11] !=
+            static_cast<std::uint8_t>(z1::OverworldSessionArea::kCave))
+        return fail("Right cave update did not retain an immutable complete foreign frame/focus");
+    g_keyinput = 0x03ff;
     // The same per-pixel observer seam must activate decoded OW37 Level 1
     // entrances. A changed published framebuffer pointer is the plugin's
     // public proof that it switched from OW terrain to the Level-1 session.

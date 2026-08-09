@@ -684,31 +684,71 @@ int test_actual_ines_path(const char* path) {
             z1::StartCaveMoveResult::kDialogueBlocked ||
         !session.restore(cave_entry_state, &error))
         return fail("start cave did not settle, expose mapped position, or preserve dialogue gate");
+    // The type-$40 bonfires update each source cave frame even while the
+    // textbox is typing. At six updates, UpdateStandingFire's
+    // AnimateObjectWalking rollover mirrors both 16x16 OAM pairs. Restore
+    // must retain that phase without allowing a malformed fire byte to alter
+    // a live framebuffer/session.
+    for (unsigned frame = 0;
+         frame != z1::Zelda1StartCaveControl::kStandingFireFramesPerPhase;
+         ++frame)
+      if (!session.tick_cave_frame()) return fail("source cave fire stopped advancing");
+    const auto fire_phase_one_state = session.serialize();
+    // Keep this additional actual-ROM framebuffer off this already large
+    // integration test's stack.
+    const auto fire_phase_one_frame =
+        std::make_unique<z1::OwFramebuffer>(session.framebuffer());
+    if (fire_phase_one_state[4] != 9 || fire_phase_one_state[23] != 1 ||
+        fire_phase_one_state[24] != z1::Zelda1StartCaveControl::kStandingFireFramesPerPhase ||
+        framebuffer_hash(*fire_phase_one_frame) != 17226980411102044710ull ||
+        same_rectangle(cave_before_sword, *fire_phase_one_frame, 0x48 - 8, 0x80 - 72,
+                       16, 16) ||
+        same_rectangle(cave_before_sword, *fire_phase_one_frame, 0xa8 - 8, 0x80 - 72,
+                       16, 16) ||
+        !write_frame_ppm("build/zelda1_start_sword_cave_fire_phase1.ppm",
+                         *fire_phase_one_frame) ||
+        !session.restore(fire_phase_one_state, &error) ||
+        session.framebuffer() != *fire_phase_one_frame ||
+        !session.restore(cave_entry_state, &error))
+      return fail("source cave fire phase was not render/persistence-stable");
     // A source character writes immediately, then Z_07 decrements ObjTimer
     // before subsequent person updates. Persist both fields and reject a bad
-    // cursor without mutating the live cave; legacy v7 still migrates into
-    // the automatic flow with its canonical zero cursor/delay.
+    // cursor/fire bytes without mutating the live cave; legacy v7/v8 still
+    // migrate into the automatic flow with a canonical standing-fire phase.
     if (!session.tick_cave_dialogue() ||
         session.cave_dialogue_visible_character_count() != 1)
         return fail("source start-cave textbox did not begin automatically");
     const auto text_progress_state = session.serialize();
-    if (text_progress_state[4] != 8 || text_progress_state[21] != 1 ||
+    if (text_progress_state[4] != 9 || text_progress_state[21] != 1 ||
         text_progress_state[22] != z1::Zelda1StartCaveControl::kTextboxFramesPerGlyph ||
+        text_progress_state[23] != 0 || text_progress_state[24] != 5 ||
         !z1::Zelda1OverworldSession::validate_serialized(text_progress_state))
-        return fail("Z1OS v8 did not persist textbox cursor/timer");
+        return fail("Z1OS v9 did not persist textbox/fire timers");
     auto corrupt_text_progress = text_progress_state;
     corrupt_text_progress[21] =
         z1::Zelda1StartCaveControl::kFirstQuestStartDialogueGlyphCount + 1;
     if (session.restore(corrupt_text_progress, &error) ||
         session.serialize() != text_progress_state)
         return fail("invalid textbox cursor mutated the live session");
+    auto corrupt_fire_phase = text_progress_state;
+    corrupt_fire_phase[23] = 2;
+    if (session.restore(corrupt_fire_phase, &error) ||
+        session.serialize() != text_progress_state)
+        return fail("invalid fire phase mutated the live session");
+    auto corrupt_fire_counter = text_progress_state;
+    corrupt_fire_counter[24] = 0;
+    if (session.restore(corrupt_fire_counter, &error) ||
+        session.serialize() != text_progress_state)
+        return fail("invalid fire counter mutated the live session");
     auto legacy_v7_text_pending = text_progress_state;
     legacy_v7_text_pending[4] = 7;
     legacy_v7_text_pending[21] = 0;
     legacy_v7_text_pending[22] = 0;
     if (!z1::Zelda1OverworldSession::validate_serialized(legacy_v7_text_pending) ||
         !session.restore(legacy_v7_text_pending, &error) ||
-        session.serialize()[4] != 8 || session.cave_dialogue_visible_character_count() != 0)
+        session.serialize()[4] != 9 || session.cave_dialogue_visible_character_count() != 0 ||
+        session.serialize()[23] != 0 ||
+        session.serialize()[24] != z1::Zelda1StartCaveControl::kStandingFireFramesPerPhase)
         return fail("Z1OS v7 cave migration did not retain a valid automatic textbox");
     unsigned text_frames = 0;
     while (!session.cave_dialogue_acknowledged() && text_frames++ != 217)

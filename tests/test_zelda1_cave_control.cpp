@@ -83,6 +83,37 @@ bool decode_start_cave_dialogue_rows(
   return false;
 }
 
+bool rendered_text_tile_uses_palette(const z1::OwFramebuffer& frame,
+                                     std::span<const std::uint8_t> prg,
+                                     std::uint8_t tile, std::uint8_t vram_low,
+                                     const std::array<std::uint8_t, 4>& palette) {
+  // The first visible source glyph is `I` ($12) at `$21A6`, after the two
+  // no-delay `$25` spaces. It is clear of every OAM sprite in the start cave,
+  // so this checks the renderer's actual composited BGR555 output rather than
+  // merely repeating the source palette calculation.
+  constexpr std::size_t kCommonBackgroundPatternPrgOffset = 34687;
+  if (kCommonBackgroundPatternPrgOffset + (static_cast<std::size_t>(tile) + 1) * 16 >
+      prg.size())
+    return false;
+  const int start_x = static_cast<int>((vram_low & 0x1f) * 8) - 8;
+  const int start_y = static_cast<int>((vram_low >> 5) * 8) - 8;
+  const auto glyph = prg.subspan(kCommonBackgroundPatternPrgOffset +
+                                     static_cast<std::size_t>(tile) * 16,
+                                 16);
+  bool saw_ink = false;
+  for (unsigned py = 0; py < 8; ++py)
+    for (unsigned px = 0; px < 8; ++px) {
+      const auto color = ((glyph[py] >> (7 - px)) & 1) |
+                         (((glyph[8 + py] >> (7 - px)) & 1) << 1);
+      saw_ink = saw_ink || color != 0;
+      const auto expected = z1::nes_to_bgr555(palette[color] & 63);
+      if (frame[(start_y + static_cast<int>(py)) * z1::kOwRenderWidth +
+                start_x + static_cast<int>(px)] != expected)
+        return false;
+    }
+  return saw_ink;
+}
+
 int test_synthetic() {
   if (!z1::is_first_quest_start_sword_pickup_position({0x78, 0x93}) ||
       !z1::is_first_quest_start_sword_pickup_position({0x78, 0x9d}) ||
@@ -121,7 +152,8 @@ int test_actual(const char* path) {
   auto data = z1::FirstQuestData::create(std::move(*prg), &error);
   if (!data) return fail("actual first-quest data rejected: " + error);
   std::vector<std::uint8_t> patterns;
-  z1::OwFramebuffer before_dialogue{}, dialogue_in_progress{}, dialogue_complete{}, sword_taken{};
+  z1::OwFramebuffer before_dialogue{}, dialogue_in_progress{}, dialogue_complete{}, sword_taken{},
+      fire_phase_one{};
   z1::FirstQuestStartCaveFacts render_facts{};
   z1::FirstQuestStartCaveDialogueFacts dialogue_facts{};
   if (!z1::copy_overworld_background_from_verified_prg(*data, &patterns, &error) ||
@@ -133,10 +165,14 @@ int test_actual(const char* path) {
       !z1::render_first_quest_start_cave(*data, patterns, {false, true, 0},
                                          &dialogue_complete) ||
       !z1::render_first_quest_start_cave(*data, patterns, {true, true, 0},
-                                         &sword_taken))
+                                         &sword_taken) ||
+      !z1::render_first_quest_start_cave(*data, patterns, {false, false, 0, 1},
+                                         &fire_phase_one))
     return fail("source cave sprite render failed: " + error);
   std::array<std::string, 3> dialogue_rows{};
+  z1::OverworldRoomView cave_palette_room{};
   if (!decode_start_cave_dialogue_rows(dialogue_facts, &dialogue_rows) ||
+      !data->overworld_room(4, 4, &cave_palette_room) ||
       dialogue_facts.line_starts != std::array<std::uint8_t, 3>{{0xc4, 0xe4, 0xa4}} ||
       dialogue_facts.used_line_starts != std::array<std::uint8_t, 2>{{0xa4, 0xc4}} ||
       dialogue_facts.visible_glyph_count != 37 ||
@@ -145,6 +181,19 @@ int test_actual(const char* path) {
       dialogue_rows[0] != "  IT'S DANGEROUS TO GO" ||
       dialogue_rows[1] != "    ALONE! TAKE THIS." || !dialogue_rows[2].empty())
     return fail("actual-ROM selector-zero textbox decode/line markers changed");
+  // Z_05:FillPlayAreaAttrs uses room $44 AttrsB for inner PlayAreaAttrs[$09].
+  // InitModeB's transfer writes that byte to `$23D9`, covering `$21A4` and
+  // `$21C4`; Z_06's cave transfer writes the selected background palette row
+  // `$0f,$30,$00,$12` at PPU `$3f08`.
+  if ((cave_palette_room.attributes.attr_a & 3) != 3 ||
+      (cave_palette_room.attributes.attr_b & 3) != 2 ||
+      render_facts.textbox_background_palette_selector != 2 ||
+      render_facts.textbox_background_palette !=
+          std::array<std::uint8_t, 4>{{0x0f, 0x30, 0x00, 0x12}} ||
+      !rendered_text_tile_uses_palette(
+          dialogue_complete, data->prg().bytes(), 0x12, 0xa6,
+          render_facts.textbox_background_palette))
+    return fail("actual-ROM cave textbox palette/inner attribute selection changed");
   // InitCave creates both the Old Man and fires before source dialogue
   // acknowledgement, while the persistent sword bit removes only the person.
   if (render_facts.old_man_visual_is_opaque || !render_facts.old_man_visible_before_sword ||
@@ -157,6 +206,10 @@ int test_actual(const char* path) {
       // disappear with their respective source state.
       !same_rectangle(before_dialogue, sword_taken, 0x48 - 8, 0x80 - 72, 16, 16) ||
       !same_rectangle(before_dialogue, sword_taken, 0xa8 - 8, 0x80 - 72, 16, 16) ||
+      // UpdateStandingFire's ObjAnimFrame is a source horizontal-flip bit:
+      // its phase-one OAM pair swaps $5c/$5e and mirrors both 8x16 sides.
+      !different_rectangle(before_dialogue, fire_phase_one, 0x48 - 8, 0x80 - 72, 16, 16) ||
+      !different_rectangle(before_dialogue, fire_phase_one, 0xa8 - 8, 0x80 - 72, 16, 16) ||
       same_rectangle(before_dialogue, sword_taken, 0x78 - 8, 0x80 - 72, 16, 16) ||
       same_rectangle(before_dialogue, sword_taken, 0x78 + 4 - 8, 0x98 - 72, 8, 16) ||
       // `$21A4`/`$21C4` become crop-space Y=32/40. `$E4` is not used by
@@ -169,7 +222,9 @@ int test_actual(const char* path) {
   if (!write_frame_ppm("build/zelda1_start_cave_text_before.ppm", before_dialogue) ||
       !write_frame_ppm("build/zelda1_start_cave_text_in_progress.ppm", dialogue_in_progress) ||
       !write_frame_ppm("build/zelda1_start_cave_text_visible.ppm", dialogue_complete) ||
-      !write_frame_ppm("build/zelda1_start_cave_text_after.ppm", sword_taken))
+      !write_frame_ppm("build/zelda1_start_cave_text_after.ppm", sword_taken) ||
+      !write_frame_ppm("build/zelda1_start_cave_fire_phase0.ppm", before_dialogue) ||
+      !write_frame_ppm("build/zelda1_start_cave_fire_phase1.ppm", fire_phase_one))
     return fail("could not write source cave dialogue QA artifacts");
   z1::Zelda1StartCaveControl control;
   z1::StartCaveOldManSpriteFacts old_man{};
@@ -189,6 +244,29 @@ int test_actual(const char* path) {
       control.dialogue_frame_delay() != z1::Zelda1StartCaveControl::kTextboxFramesPerGlyph ||
       control.move_one(z1::CaveDirection::kDown) != z1::StartCaveMoveResult::kDialogueBlocked)
     return fail("entry/dialogue control state changed");
+  // Z_04:UpdateStandingFire -> Z_07:AnimateObjectWalking decrements its
+  // counter before testing zero, then restores six and XORs ObjAnimFrame.
+  // The bounded host canonically enters on the valid source boundary (0,6).
+  if (control.standing_fire_animation_frame() != 0 ||
+      control.standing_fire_animation_counter() !=
+          z1::Zelda1StartCaveControl::kStandingFireFramesPerPhase)
+    return fail("standing fire did not begin at canonical source boundary");
+  for (unsigned frame = 0;
+       frame + 1 != z1::Zelda1StartCaveControl::kStandingFireFramesPerPhase;
+       ++frame)
+    if (!control.tick_standing_fire()) return fail("standing fire timer stopped");
+  if (control.standing_fire_animation_frame() != 0 ||
+      control.standing_fire_animation_counter() != 1 || !control.tick_standing_fire() ||
+      control.standing_fire_animation_frame() != 1 ||
+      control.standing_fire_animation_counter() !=
+          z1::Zelda1StartCaveControl::kStandingFireFramesPerPhase)
+    return fail("standing fire six-frame source cadence changed");
+  if (control.restore_standing_fire_animation(2, 6) ||
+      control.restore_standing_fire_animation(1, 0) ||
+      control.standing_fire_animation_frame() != 1 ||
+      control.standing_fire_animation_counter() !=
+          z1::Zelda1StartCaveControl::kStandingFireFramesPerPhase)
+    return fail("invalid standing-fire restore mutated control state");
   for (unsigned frame = 0; frame != z1::Zelda1StartCaveControl::kTextboxFramesPerGlyph;
        ++frame)
     if (!control.tick_dialogue()) return fail("source textbox timer stopped");

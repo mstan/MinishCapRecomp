@@ -317,7 +317,10 @@ bool observe_cave_interaction(std::uint16_t keyinput) {
     // timer emits the verified PersonText glyph stream then UnhaltLink runs
     // from the final `$C0` marker. Keep A harmless while that text is active;
     // only post-dialogue A edges may request the exact source sword hotspot.
-    (void)g_overworld_session.tick_cave_dialogue();
+    // Cave text and type-$40 standing fires are both source per-frame object
+    // updates. The session stages their control state and framebuffer as one
+    // failure-atomic cave frame.
+    (void)g_overworld_session.tick_cave_frame();
     const bool a_edge = g_cave_a_edge.observe(keyinput, kGbaKeyA);
     if (g_overworld_session.cave_dialogue_acknowledged() && a_edge) {
         std::string error;
@@ -535,6 +538,11 @@ void reset_smith_yard_readiness_plugin() {
     // A reset recreates the bus/PPU before the mod callback is invoked, so
     // restoring old VRAM here would be invalid.  The next session begins
     // inactive; normal exit is handled by leave_qa_video().
+    // Clear direct PPU publication before releasing session-owned double
+    // buffers. This is required even when the runtime normally pre-clears:
+    // the raw background/focus addresses must never dangle during reset.
+    gba_mod_clear_foreign_obj_focus();
+    gba_mod_clear_foreign_background();
     g_qa_video_active = false;
     g_foreign_survival_safe = false;
     g_overworld_session = {};
@@ -548,8 +556,6 @@ void reset_smith_yard_readiness_plugin() {
     g_presentation_restore_pending = false;
     g_seen_native_restore_generation = foreign_world_native_state().restore_generation();
     foreign_world_native_state().set_zelda1_presentation_active(false);
-    gba_mod_clear_foreign_obj_focus();
-    gba_mod_clear_foreign_background();
     (void)gba_mod_set_function_hook_enabled(kZelda1ForeignWorldPluginId, 0);
 }
 

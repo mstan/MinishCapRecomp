@@ -142,12 +142,13 @@ this normal cave `$77` has source cave index `$10`. On exit, `InitMode2` derives
 returns at the last value, viewport `(56,21)`, where the original starts its
 walk-down animation.
 
-The session record is fixed 64-byte `Z1OS` version 8. It persists signed source
+The session record is fixed 64-byte `Z1OS` version 9. It persists signed source
 coordinates, source grid phase/direction, overworld/cave area, source cave
 index, one-way starting-sword state, and (for the active start-cave textbox)
-the visible-glyph cursor plus its source `ObjTimer+1` delay. Strict v5/v6/v7
+the visible-glyph cursor plus its source `ObjTimer+1` delay. Strict v5–v8
 migration produces a canonical settled source-grid record; v7's former
-unacknowledged A gate resumes at the first automatic glyph. Restore rejects an
+unacknowledged A gate resumes at the first automatic glyph, and v8 gets the
+canonical standing-fire phase. Restore rejects an
 area/index combination that does not agree with the currently loaded room's
 source entrance record.
 
@@ -157,8 +158,14 @@ The bounded normal-cave renderer is source-backed for the start cave selected
 by OW `$77` (normal cave slot zero). It expands `Z_05:RoomLayoutOWCave0` with
 the same column heap, primary-square, and final-tile code used by OW terrain;
 uses `Z_06:CaveBgPaletteRowsTransferBuf` from verified PRG offset `107101`;
-and applies `InitModeB_Sub5`'s room `$44` AttrsA palette selector. It remains
-the same centered 240x160 BGR555 playfield crop.
+and applies `InitModeB_Sub5`'s room `$44` source attributes. The static
+backdrop uses its outer AttrsA selector, while the `$21A4`/`$21C4` textbox
+cells map to PPU attribute byte `$23D9`: `InitModeB` transfers its inner
+`PlayAreaAttrs[$09]` there, so those cells use AttrsB. For the verified First
+Quest ROM that is background palette row 2 from the cave transfer:
+`$0F,$30,$00,$12`; the text's primary ink is therefore NES color `$30`, not
+the brown outer-row color `$07`. It remains the same centered 240x160 BGR555
+playfield crop.
 
 `Z_01:InitCave` proves the cave person is source object `$6A` at `($78,$80)`.
 The pinned reset in `Z_07` writes `PPUCTRL=$30`, selecting 8x16 OAM sprites:
@@ -238,7 +245,7 @@ pair unchanged; `framebuffer()` then exposes the stable 240x160 BGR555 array.
 shared static geometry. It owns the active OW room plus signed source
 `ObjX/ObjY`; its presentation position is the fixed crop inverse
 `(ObjX-8, ObjY-72)`. World flags, inventory, and actor records remain owned by
-their respective host controllers. Its fixed 64-byte `Z1OS` v8 record restores
+their respective host controllers. Its fixed 64-byte `Z1OS` v9 record restores
 room/frame/geometry failure-atomically from the already loaded,
 caller-identity-validated PRG.
 
@@ -250,6 +257,18 @@ followed by crop `-$08,-$48`. This presentation-only conversion applies in the
 overworld, caves, and Level 1. `Z_07` collision's `ObjY+$0B` remains a distinct
 inset sample point five pixels above the visual feet; it does not change
 collision, warps, source coordinates, or persistence.
+
+The normal OW77 cave models both source type-`$40` bonfires. `Z_01` installs
+them at `($48,$80)` and `($A8,$80)`; `Z_04:UpdateStandingFire` selects sprite
+palette row 2 and forces facing-up, then `Z_07:AnimateObjectWalking` decrements
+`ObjAnimCounter`, rolls it to six, and XORs `ObjAnimFrame`. The up-facing
+sprite setup uses that frame bit as horizontal flip, so the renderer swaps and
+mirrors the `$5c/$5d` and `$5e/$5f` 8x16 OAM halves every six frames. The
+standalone session canonically enters on `(frame=0,counter=6)` because the
+original shared object scratch bytes have no cave-specific initialization;
+`Z1OS` v9 persists this bounded state at bytes 23/24. v5–v8 records migrate to
+that canonical boundary. This is specifically not `Z_07:UpdateFire`, which
+updates moving/candle fire rather than the start-cave bonfires.
 
 Input is a proposed one-pixel cardinal displacement. The session reproduces
 the source grid-phase/direction cadence, uses `Z_07` directional probes at

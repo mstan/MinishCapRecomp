@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -102,6 +103,16 @@ struct OverworldSourcePosition {
 // by perpendicular distance. That fallback is explicit host policy.
 class Zelda1OverworldSession {
 public:
+  Zelda1OverworldSession()
+      : framebuffers_{std::make_unique<OwFramebuffer>(),
+                      std::make_unique<OwFramebuffer>()} {}
+  // Frame buffers are publication-owned identities: copying a session would
+  // let two controllers overwrite the same inactive PPU backing store. Live
+  // adapters take this session by reference, so prohibit copies explicitly.
+  Zelda1OverworldSession(const Zelda1OverworldSession&) = delete;
+  Zelda1OverworldSession& operator=(const Zelda1OverworldSession&) = delete;
+  Zelda1OverworldSession(Zelda1OverworldSession&&) noexcept = default;
+  Zelda1OverworldSession& operator=(Zelda1OverworldSession&&) noexcept = default;
   inline static constexpr std::uint8_t kInitialRoom = 0x77;
   inline static constexpr std::uint8_t kInitialLinkX = 120;
   // The host's retained OW77 entry point is snapped to Z_07's documented
@@ -113,9 +124,9 @@ public:
   // collision is hotspot/tile based rather than an 8x8 sprite rectangle.
   inline static constexpr std::uint8_t kLinkFootprintWidth = 1;
   inline static constexpr std::uint8_t kLinkFootprintHeight = 1;
-  // v8 additionally persists the source textbox's visible-character cursor
-  // and ObjTimer+1-style delay at bytes 21/22. v5/v6/v7 records migrate on
-  // restore. Bytes 23..31 are canonical padding;
+  // v9 additionally persists the source standing-fire ObjAnimFrame and
+  // ObjAnimCounter at bytes 23/24. v5/v6/v7/v8 records migrate on restore.
+  // Bytes 25..31 are canonical padding;
   // combat remains at byte 32 to keep FWNS's fixed provider footprint.
   inline static constexpr std::size_t kSerializedSize = 64;
 
@@ -155,7 +166,7 @@ public:
       octorok_candidate.render_qa_markers(&frame_candidate);
     }
     loader_ = std::move(loader_candidate);
-    framebuffer_ = frame_candidate;
+    commit_frame(frame_candidate);
     geometry_ = geometry_candidate;
     source_position_ = source_candidate;
     area_ = OverworldSessionArea::kOverworld;
@@ -227,7 +238,7 @@ public:
                                   kZelda1LinkFeetOffsetY - 72)};
   }
   [[nodiscard]] const OwFramebuffer &framebuffer() const {
-    return framebuffer_;
+    return *framebuffers_[active_framebuffer_index_];
   }
   [[nodiscard]] const OwRoomGeometry &geometry() const { return geometry_; }
   [[nodiscard]] const Zelda1LiveFrameLoader &loader() const { return loader_; }
@@ -279,7 +290,7 @@ public:
     out[1] = '1';
     out[2] = 'O';
     out[3] = 'S';
-    out[4] = 8;
+    out[4] = 9;
     out[5] = loaded_ ? 1 : 0;
     out[6] = source_position_.room_id;
     write_i16(&out[7], source_position_.obj_x);
@@ -296,6 +307,8 @@ public:
       out[19] = cave_position.y;
       out[21] = cave_control_.dialogue_visible_character_count();
       out[22] = cave_control_.dialogue_frame_delay();
+      out[23] = cave_control_.standing_fire_animation_frame();
+      out[24] = cave_control_.standing_fire_animation_counter();
     }
     out[17] = static_cast<std::uint8_t>(grid_offset_);
     out[20] = static_cast<std::uint8_t>(walk_direction_);
@@ -316,8 +329,8 @@ public:
       return false;
     }
     std::array<std::uint8_t, kSerializedSize> migrated{};
-    if (!migrate_serialized(blob, &migrated) || !validate_v8(migrated)) {
-      set_error(error, "invalid Zelda1OverworldSession v8 state");
+    if (!migrate_serialized(blob, &migrated) || !validate_v9(migrated)) {
+      set_error(error, "invalid Zelda1OverworldSession v9 state");
       return false;
     }
     const auto next_area = static_cast<OverworldSessionArea>(migrated[11]);
@@ -351,14 +364,14 @@ public:
     if (next_area == OverworldSessionArea::kCave &&
         !restore_cave_control(data, migrated[15] != 0, migrated[16] != 0,
                               migrated[13] != 0, {migrated[18], migrated[19]},
-                              migrated[21], migrated[22],
+                              migrated[21], migrated[22], migrated[23], migrated[24],
                               &cave_candidate)) {
       set_error(error, "restored start-cave control state is unreachable");
       return false;
     }
     if (next_area == OverworldSessionArea::kCave &&
         !render_cave_frame(data, migrated[13] != 0, migrated[16] != 0,
-                           migrated[21],
+                           migrated[21], migrated[23],
                            &frame_candidate, error))
       return false;
     Ow66OctorokRuntime combat_candidate;
@@ -372,7 +385,7 @@ public:
       set_error(error, "invalid persisted OW66 Octorok state"); return false;
     }
     geometry_ = geometry_candidate;
-    framebuffer_ = frame_candidate;
+    commit_frame(frame_candidate);
     source_position_ = {migrated[6], restored_x, restored_y};
     area_ = next_area;
     cave_index_ = migrated[12];
@@ -381,26 +394,33 @@ public:
     walk_direction_ = static_cast<OverworldWalkDirection>(migrated[20]);
     cave_control_ = cave_candidate;
     octoroks_ = combat_candidate;
-    if (source_position_.room_id == 0x66 && octoroks_.initialized()) octoroks_.render_qa_markers(&framebuffer_);
+    if (source_position_.room_id == 0x66 && octoroks_.initialized()) {
+      OwFramebuffer marked = framebuffer();
+      octoroks_.render_qa_markers(&marked);
+      commit_frame(marked);
+    }
     return true;
   }
 
   static bool validate_serialized(std::span<const std::uint8_t> blob) {
     std::array<std::uint8_t, kSerializedSize> migrated{};
-    return migrate_serialized(blob, &migrated) && validate_v8(migrated);
+    return migrate_serialized(blob, &migrated) && validate_v9(migrated);
   }
-  static bool validate_v8(const std::array<std::uint8_t, kSerializedSize> &blob) {
+  static bool validate_v9(const std::array<std::uint8_t, kSerializedSize> &blob) {
     const bool cave = blob[11] == static_cast<std::uint8_t>(OverworldSessionArea::kCave);
     const bool canonical_padding = blob.size() == kSerializedSize &&
-        std::all_of(blob.begin() + 23, blob.begin() + 32,
+        std::all_of(blob.begin() + 25, blob.begin() + 32,
                     [](std::uint8_t byte) { return byte == 0; });
     const bool cave_fields = !cave
         ? blob[12] == 0 && blob[15] == 0 && blob[16] == 0 &&
-          blob[18] == 0 && blob[19] == 0 && blob[21] == 0 && blob[22] == 0
+          blob[18] == 0 && blob[19] == 0 && blob[21] == 0 && blob[22] == 0 &&
+          blob[23] == 0 && blob[24] == 0
         : blob[12] == 16 && blob[15] <= 1 && blob[16] <= 1 && blob[17] == 0 &&
           blob[20] == 0 &&
           blob[21] <= Zelda1StartCaveControl::kFirstQuestStartDialogueGlyphCount &&
           blob[22] <= Zelda1StartCaveControl::kTextboxFramesPerGlyph &&
+          blob[23] <= 1 && blob[24] >= 1 &&
+          blob[24] <= Zelda1StartCaveControl::kStandingFireFramesPerPhase &&
           !(blob[15] != 0 && (blob[16] != 0 || blob[13] != 0 ||
                               blob[21] != 0 || blob[22] != 0)) &&
           !(blob[16] != 0 &&
@@ -413,7 +433,7 @@ public:
         ((offset == 0) == (direction == OverworldWalkDirection::kNone)) &&
         (offset == 0 || next_grid_segment_is_consistent(read_i16(&blob[7]), read_i16(&blob[9]), offset, direction));
     return blob.size() == kSerializedSize && blob[0] == 'Z' && blob[1] == '1' &&
-               blob[2] == 'O' && blob[3] == 'S' && blob[4] == 8 && blob[5] == 1 &&
+               blob[2] == 'O' && blob[3] == 'S' && blob[4] == 9 && blob[5] == 1 &&
            blob[6] < kRoomCount &&
            source_coordinates_in_bounds(read_i16(&blob[7]), read_i16(&blob[9])) &&
            blob[11] <= static_cast<std::uint8_t>(OverworldSessionArea::kCave) &&
@@ -464,9 +484,11 @@ public:
       return OverworldSessionCaveResult::kInvalid;
     OwFramebuffer cave_frame{};
     if (!render_cave_frame(*loader_.first_quest_data(), start_sword_acquired_,
-                           false, 0, &cave_frame, nullptr))
+                           false, 0,
+                           cave_candidate.standing_fire_animation_frame(),
+                           &cave_frame, nullptr))
       return OverworldSessionCaveResult::kInvalid;
-    framebuffer_ = cave_frame;
+    commit_frame(cave_frame);
     area_ = OverworldSessionArea::kCave;
     cave_index_ = entrance.destination_index;
     cave_control_ = cave_candidate;
@@ -483,30 +505,41 @@ public:
     OwFramebuffer candidate{};
     if (!render_cave_frame(*loader_.first_quest_data(), start_sword_acquired_,
                            true, candidate_control.dialogue_visible_character_count(),
+                           candidate_control.standing_fire_animation_frame(),
                            &candidate, nullptr))
       return false;
     cave_control_ = candidate_control;
-    framebuffer_ = candidate;
+    commit_frame(candidate);
     return true;
   }
 
-  // Z_01:UpdatePersonState_Textbox is an ordinary per-frame cave-person
-  // update, not an input edge. Stage control and pixels together so a failed
-  // source render cannot advance/unhalt a persisted session.
-  bool tick_cave_dialogue() {
+  // The cave person's textbox and both standing fires are ordinary per-frame
+  // source object updates. Stage the two control mutations and pixels
+  // together, so a failed source render cannot advance any persisted state.
+  bool tick_cave_frame() {
     if (area_ != OverworldSessionArea::kCave) return false;
     Zelda1StartCaveControl candidate_control = cave_control_;
-    if (!candidate_control.tick_dialogue()) return false;
+    const bool dialogue_advanced = candidate_control.tick_dialogue();
+    if (!candidate_control.tick_standing_fire()) return false;
+    // Unlike text, fire continues after the final `$C0`; therefore a render
+    // success is a live update even when the dialogue was already complete.
+    if (!dialogue_advanced && !candidate_control.dialogue_acknowledged())
+      return false;
     OwFramebuffer candidate{};
     if (!render_cave_frame(*loader_.first_quest_data(), start_sword_acquired_,
                            candidate_control.dialogue_acknowledged(),
                            candidate_control.dialogue_visible_character_count(),
+                           candidate_control.standing_fire_animation_frame(),
                            &candidate, nullptr))
       return false;
     cave_control_ = candidate_control;
-    framebuffer_ = candidate;
+    commit_frame(candidate);
     return true;
   }
+
+  // Compatibility name for existing adapters/tests. It now advances the
+  // whole source cave object frame, including standing-fire animation.
+  bool tick_cave_dialogue() { return tick_cave_frame(); }
 
   StartCaveMoveResult move_cave_one(CaveDirection direction) {
     if (area_ != OverworldSessionArea::kCave) return StartCaveMoveResult::kNotLoaded;
@@ -551,6 +584,7 @@ public:
     OwFramebuffer frame_candidate{};
     if (!render_cave_frame(*loader_.first_quest_data(), true, true,
                            Zelda1StartCaveControl::kFirstQuestStartDialogueGlyphCount,
+                           cave_control_.standing_fire_animation_frame(),
                            &frame_candidate, error))
       return OverworldSessionSwordResult::kInvalid;
     using namespace minish::foreign_world;
@@ -599,7 +633,7 @@ public:
     }
     *inventory = std::move(inventory_candidate);
     cave_control_ = control_candidate;
-    framebuffer_ = frame_candidate;
+    commit_frame(frame_candidate);
     start_sword_acquired_ = true;
     return OverworldSessionSwordResult::kAcquired;
   }
@@ -635,7 +669,7 @@ public:
       return OverworldSessionCaveResult::kInvalid;
     }
     geometry_ = geometry_candidate;
-    framebuffer_ = frame_candidate;
+    commit_frame(frame_candidate);
     source_position_.obj_x = return_hotspot.source_x;
     source_position_.obj_y = return_hotspot.source_initial_y;
     area_ = OverworldSessionArea::kOverworld;
@@ -775,24 +809,37 @@ private:
     if (!out || blob.size() != kSerializedSize || blob[0] != 'Z' ||
         blob[1] != '1' || blob[2] != 'O' || blob[3] != 'S' || blob[5] != 1)
       return false;
+    if (blob[4] == 9) {
+      std::copy(blob.begin(), blob.end(), out->begin());
+      return true;
+    }
     if (blob[4] == 8) {
       std::copy(blob.begin(), blob.end(), out->begin());
+      (*out)[4] = 9;
+      // v8 did not retain standing-fire object bytes. A cave restore resumes
+      // at the documented source-boundary canonical phase; OW keeps zeros.
+      if ((*out)[11] == static_cast<std::uint8_t>(OverworldSessionArea::kCave)) {
+        (*out)[23] = 0;
+        (*out)[24] = Zelda1StartCaveControl::kStandingFireFramesPerPhase;
+      }
       return true;
     }
     if (blob[4] == 7) {
       std::copy(blob.begin(), blob.end(), out->begin());
-      (*out)[4] = 8;
+      (*out)[4] = 9;
       // v7 had no textbox cursor. A completed legacy cave must retain the
       // source nametable result; an incomplete one resumes from its first
       // transfer rather than retaining the obsolete A-only gate.
       if ((*out)[11] == static_cast<std::uint8_t>(OverworldSessionArea::kCave) &&
           (*out)[16] != 0)
         (*out)[21] = Zelda1StartCaveControl::kFirstQuestStartDialogueGlyphCount;
+      if ((*out)[11] == static_cast<std::uint8_t>(OverworldSessionArea::kCave))
+        (*out)[24] = Zelda1StartCaveControl::kStandingFireFramesPerPhase;
       return true;
     }
     if (blob[4] == 6) {
       std::copy(blob.begin(), blob.end(), out->begin());
-      (*out)[4] = 8;
+      (*out)[4] = 9;
       // v6 had byte 17 canonical zero and no direction state. A restored
       // record is therefore at a source grid boundary with no carried input.
       (*out)[17] = 0;
@@ -800,6 +847,8 @@ private:
       if ((*out)[11] == static_cast<std::uint8_t>(OverworldSessionArea::kCave) &&
           (*out)[16] != 0)
         (*out)[21] = Zelda1StartCaveControl::kFirstQuestStartDialogueGlyphCount;
+      if ((*out)[11] == static_cast<std::uint8_t>(OverworldSessionArea::kCave))
+        (*out)[24] = Zelda1StartCaveControl::kStandingFireFramesPerPhase;
       return true;
     }
     // v5 persisted cropped uint8 coordinates.  Its grammar is checked
@@ -823,7 +872,7 @@ private:
         (!combat_present && !std::all_of(blob.begin()+32, blob.end(), [](std::uint8_t b){ return b == 0; })))
       return false;
     out->fill(0);
-    (*out)[0]='Z'; (*out)[1]='1'; (*out)[2]='O'; (*out)[3]='S'; (*out)[4]=8;
+    (*out)[0]='Z'; (*out)[1]='1'; (*out)[2]='O'; (*out)[3]='S'; (*out)[4]=9;
     (*out)[5]=1; (*out)[6]=blob[6];
     write_i16(&(*out)[7], static_cast<std::int16_t>(blob[7] + 8));
     write_i16(&(*out)[9], static_cast<std::int16_t>(blob[8] + 72));
@@ -832,18 +881,22 @@ private:
     if ((*out)[11] == static_cast<std::uint8_t>(OverworldSessionArea::kCave) &&
         (*out)[16] != 0)
       (*out)[21] = Zelda1StartCaveControl::kFirstQuestStartDialogueGlyphCount;
+    if ((*out)[11] == static_cast<std::uint8_t>(OverworldSessionArea::kCave))
+      (*out)[24] = Zelda1StartCaveControl::kStandingFireFramesPerPhase;
     std::copy(blob.begin()+32, blob.end(), out->begin()+32);
     return true;
   }
   static bool render_cave_frame(const FirstQuestData &data, bool sword_acquired,
                                 bool dialogue_acknowledged,
                                 std::uint8_t visible_dialogue_characters,
+                                std::uint8_t standing_fire_animation_frame,
                                 OwFramebuffer *frame, std::string *error) {
     std::vector<std::uint8_t> patterns;
     if (!copy_overworld_background_from_verified_prg(data, &patterns, error) ||
         !render_first_quest_start_cave(data, patterns,
                                        {sword_acquired, dialogue_acknowledged,
-                                        visible_dialogue_characters},
+                                        visible_dialogue_characters,
+                                        standing_fire_animation_frame},
                                        frame)) {
       if (error && error->empty())
         set_error(error, "could not source-render start cave control frame");
@@ -877,10 +930,15 @@ private:
                                    CaveSourcePosition target,
                                    std::uint8_t visible_dialogue_characters,
                                    std::uint8_t dialogue_frame_delay,
+                                   std::uint8_t standing_fire_animation_frame,
+                                   std::uint8_t standing_fire_animation_counter,
                                    Zelda1StartCaveControl *out) {
     if (!out) return false;
     Zelda1StartCaveControl base;
     if (!base.load(data)) return false;
+    if (!base.restore_standing_fire_animation(standing_fire_animation_frame,
+                                              standing_fire_animation_counter))
+      return false;
     if (entering) {
       if (dialogue_acknowledged || sword_acquired || visible_dialogue_characters != 0 ||
           dialogue_frame_delay != 0 ||
@@ -923,6 +981,13 @@ private:
     }
     return false;
   }
+  void commit_frame(const OwFramebuffer &candidate) {
+    const unsigned inactive = active_framebuffer_index_ ^ 1u;
+    // The two arrays are allocated with the session and never reallocated;
+    // a PPU callback holding the old data() address cannot observe this copy.
+    *framebuffers_[inactive] = candidate;
+    active_framebuffer_index_ = inactive;
+  }
   bool commit_octorok_candidate(const Ow66OctorokRuntime &candidate) {
     OwRoomGeometry geometry_candidate{};
     OwFramebuffer frame_candidate{};
@@ -932,7 +997,7 @@ private:
       return false;
     candidate.render_qa_markers(&frame_candidate);
     geometry_ = geometry_candidate;
-    framebuffer_ = frame_candidate;
+    commit_frame(frame_candidate);
     octoroks_ = candidate;
     return true;
   }
@@ -1064,7 +1129,7 @@ private:
     }
     source_position_ = position_candidate;
     geometry_ = geometry_candidate;
-    framebuffer_ = frame_candidate;
+    commit_frame(frame_candidate);
     octoroks_ = octorok_candidate;
     grid_offset_ = 0;
     walk_direction_ = OverworldWalkDirection::kNone;
@@ -1073,7 +1138,15 @@ private:
   }
 
   Zelda1LiveFrameLoader loader_;
-  OwFramebuffer framebuffer_{};
+  // A foreign background is consumed directly by the PPU compositor. Static
+  // OW frames could safely live in one array, but cave text/fire updates are
+  // dynamic: overwriting the currently published array let the compositor
+  // observe its terrain pass before the source sprite/text pass completed.
+  // Keep both backing arrays alive and flip only after the inactive one has
+  // received a completed candidate. The immediately previous PPU pointer
+  // remains immutable through the next source update.
+  std::array<std::unique_ptr<OwFramebuffer>, 2> framebuffers_{};
+  unsigned active_framebuffer_index_ = 0;
   OwRoomGeometry geometry_{};
   OverworldSourcePosition source_position_{};
   OverworldSessionArea area_ = OverworldSessionArea::kOverworld;
