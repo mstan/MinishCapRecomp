@@ -619,9 +619,94 @@ int main(int argc, char** argv) {
     (void)gba_mod_function_entry(0x08080840u, 1, &observe_cpu);
     if (g_foreign_overlay || g_bus_write_count != writes_before_transition)
         return fail("DoExitTransition did not clear only the native portal overlay");
+    // A transition deliberately revokes the visible-frame lease. An A press
+    // that changed native action/control cannot resurrect that cleared portal.
+    g_player_action = 4; g_move_locks = 1;
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (g_foreign_background || g_foreign_focus)
+        return fail("transition-cleared portal lease entered on action-changed A press");
+    // Re-establish a fully-ready visible frame, then confirm InitPauseMenu
+    // also revokes that lease before native menu/action input can enter.
+    make_ready_phase();
     g_keyinput = 0x03ff;
-    if (!enter_portal(&observe_cpu))
-        return fail("native portal could not re-enter after all-Dpad/transition regression");
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (!g_foreign_overlay)
+        return fail("ready frame did not restore native portal after transition test");
+    (void)gba_mod_function_entry(0x080A4D88u, 1, &observe_cpu);
+    g_player_action = 4; g_move_locks = 1;
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (g_foreign_background || g_foreign_focus)
+        return fail("menu-cleared portal lease entered on action-changed A press");
+    const auto restore_visible_portal = [&]() {
+        make_ready_phase();
+        g_keyinput = 0x03ff;
+        ++g_frame;
+        (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+        return g_foreign_overlay != nullptr && !g_foreign_background && !g_foreign_focus;
+    };
+    // A lease never weakens a hard source gate. Each fixture starts with a
+    // strictly visible portal, then presses A only after the listed hard gate
+    // changed. This covers the exact transient-action pathway adversarially.
+    if (!restore_visible_portal()) return fail("wrong-room gate lacked visible portal fixture");
+    g_room = 2; g_player_action = 4; g_move_locks = 1;
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
+    ++g_frame; (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (g_foreign_background || g_foreign_focus)
+        return fail("wrong room bypassed the portal interaction lease");
+    g_room = 1;
+    if (!restore_visible_portal()) return fail("dead gate lacked visible portal fixture");
+    g_player_killed = 1; g_player_action = 4; g_move_locks = 1;
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
+    ++g_frame; (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (g_foreign_background || g_foreign_focus)
+        return fail("dead Link bypassed the portal interaction lease");
+    g_player_killed = 0;
+    if (!restore_visible_portal()) return fail("hidden gate lacked visible portal fixture");
+    g_player_draw = 0; g_player_action = 4; g_move_locks = 1;
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
+    ++g_frame; (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (g_foreign_background || g_foreign_focus)
+        return fail("hidden Link bypassed the portal interaction lease");
+    g_player_draw = 0x13;
+    if (!restore_visible_portal()) return fail("message gate lacked visible portal fixture");
+    g_message_state = 1; g_player_action = 4; g_move_locks = 1;
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
+    ++g_frame; (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (g_foreign_background || g_foreign_focus)
+        return fail("message/cutscene state bypassed the portal interaction lease");
+    g_message_state = 0;
+    // A released F+1 consumes no interaction; an action-changed A at F+2 is
+    // stale and must not re-use the F portal publication.
+    if (!restore_visible_portal()) return fail("stale-lease fixture lacked visible portal");
+    g_player_action = 4; g_move_locks = 1; g_keyinput = 0x03ff;
+    ++g_frame; (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
+    ++g_frame; (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (g_foreign_background || g_foreign_focus)
+        return fail("F+2 stale portal lease entered on transient action A press");
+    // This is the live-user case: a previously visible, fully ready portal
+    // may consume the next A edge even when that edge changed action/control.
+    if (!restore_visible_portal())
+        return fail("lease fixture could not publish the native portal");
+    g_player_action = 4; g_move_locks = 1;
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (!g_foreign_background || !g_foreign_focus || g_foreign_overlay ||
+        g_bus_write_count != writes_before_transition)
+        return fail("visible portal lease did not consume action-changed A edge read-only");
+    const auto* lease_entry_background = g_foreign_background;
+    const auto* lease_entry_focus = g_foreign_focus;
+    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
+    if (g_foreign_background != lease_entry_background ||
+        g_foreign_focus != lease_entry_focus)
+        return fail("dual UpdateEntities callbacks entered the portal lease twice");
+    make_ready_phase();
     // TMC player.c:CheckInitPauseMenu calls InitPauseMenu only after validating
     // a new Start press and normal control. The exact InitPauseMenu hook must
     // therefore suspend the foreign PPU pair without treating raw/rejected
