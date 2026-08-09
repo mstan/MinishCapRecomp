@@ -27,17 +27,29 @@ z1::MinishPortalInput input(std::uint32_t frame, std::uint16_t keyinput,
 
 int main() {
     const auto world = z1::minish_portal_world_position(0x100, 0x80);
-    if (world.x != 0x390 || world.y != 0x21c)
+    if (world.x != 0x350 || world.y != 0x238)
         return fail("local source portal anchor did not convert to world coordinates");
     const auto screen = z1::project_minish_portal(0, 0, 0x200, 0x100);
-    if (screen.x != 0x80 || screen.y != 0x74)
+    if (screen.x != 64 || screen.y != 0x90)
         return fail("source-world portal did not project through RoomControls scroll");
-    if (!z1::minish_portal_contains(0x290, 0x19c, 0, 0) ||
-        !z1::minish_portal_contains(0x29c, 0x1a8, 0, 0) ||
-        z1::minish_portal_contains(0x29d, 0x19c, 0, 0) ||
-        z1::minish_portal_contains(0x290, 0x1a9, 0, 0) ||
-        !z1::minish_portal_contains(0x390, 0x21c, 0x100, 0x80))
+    if (!z1::minish_portal_contains(0x250, 0x1b8, 0, 0) ||
+        !z1::minish_portal_contains(0x25c, 0x1c4, 0, 0) ||
+        z1::minish_portal_contains(0x25d, 0x1b8, 0, 0) ||
+        z1::minish_portal_contains(0x250, 0x1c5, 0, 0) ||
+        !z1::minish_portal_contains(0x350, 0x238, 0x100, 0x80))
         return fail("12px portal interaction bounds are not exact");
+    // Source proof: transitions.c defines Link's House as the exact rectangle
+    // x=[0x282,0x29e], y=[0x182,0x18e]. The complete interaction square is
+    // west/south of it with a 37px horizontal gap; no transition captures A.
+    constexpr int kHouseWarpLeft = 0x282, kHouseWarpRight = 0x29e;
+    constexpr int kHouseWarpTop = 0x182, kHouseWarpBottom = 0x18e;
+    constexpr int kPortalLeft = z1::kMinishPortalAnchorLocalX - 12;
+    constexpr int kPortalRight = z1::kMinishPortalAnchorLocalX + 12;
+    constexpr int kPortalTop = z1::kMinishPortalAnchorLocalY - 12;
+    constexpr int kPortalBottom = z1::kMinishPortalAnchorLocalY + 12;
+    if (!(kPortalRight < kHouseWarpLeft || kPortalLeft > kHouseWarpRight ||
+          kPortalBottom < kHouseWarpTop || kPortalTop > kHouseWarpBottom))
+        return fail("open-yard portal interaction overlaps Link's House transition");
 
     z1::MinishForeignPortalController controller;
     // A held A at activation is intentionally inert until a release happens.
@@ -52,7 +64,7 @@ int main() {
 
     controller.reset();
     (void)controller.observe(input(10, 0x03ff));
-    if (controller.observe(input(11, 0x03fe, true, 0x2a0, 0x19c)) !=
+    if (controller.observe(input(11, 0x03fe, true, 0x260, 0x1b8)) !=
         z1::MinishPortalEvent::None)
         return fail("A outside the native portal entered Zelda");
     // A press sampled by an unready ROM phase is retained for a later ready
@@ -70,7 +82,7 @@ int main() {
 
     z1::MinishForeignPortalRenderer renderer;
     const auto* first = renderer.next(0x200, 0x100, 0, 0, 0);
-    if (!first || first->screen.x != 0x80 || first->screen.y != 0x74 ||
+    if (!first || first->screen.x != 64 || first->screen.y != 0x90 ||
         std::none_of(first->alpha_q4.begin(), first->alpha_q4.end(),
                      [](std::uint8_t alpha) { return alpha != 0; }) ||
         std::any_of(first->alpha_q4.begin(), first->alpha_q4.end(),
@@ -79,8 +91,8 @@ int main() {
     const auto first_copy = *first;
     const auto* second = renderer.next(0x201, 0x102, 0, 0, 1);
     if (!second || second == first || first->pixels != first_copy.pixels ||
-        first->alpha_q4 != first_copy.alpha_q4 || second->screen.x != 0x7f ||
-        second->screen.y != 0x72 || second->pixels == first_copy.pixels)
+        first->alpha_q4 != first_copy.alpha_q4 || second->screen.x != 63 ||
+        second->screen.y != 0x8e || second->pixels == first_copy.pixels)
         return fail("portal animation/double buffer did not retain the prior immutable frame");
 
     std::cout << "Minish foreign portal controller and renderer passed\n";

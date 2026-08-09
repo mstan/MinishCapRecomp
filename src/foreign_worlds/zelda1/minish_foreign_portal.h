@@ -12,11 +12,15 @@ namespace minish::foreign_world::zelda1 {
 
 inline constexpr std::uint16_t kMinishPortalWidth = 32;
 inline constexpr std::uint16_t kMinishPortalHeight = 40;
-// TMC's room entity/transition data uses these South Hyrule Field local
-// coordinates. The live plugin derives their absolute world point by adding
-// gRoomControls.origin_x/y before comparing with Entity x/y.
-inline constexpr std::int16_t kMinishPortalAnchorLocalX = 0x290;
-inline constexpr std::int16_t kMinishPortalAnchorLocalY = 0x19c;
+// South Hyrule Field local coordinates. This is the open white-flower patch
+// in front-left of Link's house—not the house door/warp at (0x290,0x188).
+// In the F0 source frame its overlay is screen (78,58)..(110,98), about 26px
+// left and 23px in front of Link's feet. Its 12px interaction square is
+// (0x244..0x25c, 0x1ac..0x1c4), safely outside the source house-warp rectangle
+// (0x282..0x29e, 0x182..0x18e). The live plugin derives its absolute world
+// point by adding gRoomControls.origin_x/y before comparing with Entity x/y.
+inline constexpr std::int16_t kMinishPortalAnchorLocalX = 0x250;
+inline constexpr std::int16_t kMinishPortalAnchorLocalY = 0x1b8;
 // This is deliberately an interaction half-extent, not a guest collision
 // shape. Native Minish collision remains entirely source-owned.
 inline constexpr std::int16_t kMinishPortalInteractionHalfExtent = 12;

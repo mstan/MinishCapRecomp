@@ -43,6 +43,9 @@ std::uint16_t g_player_sprite_vram_offset = 0x160;
 std::int16_t g_player_feet_x = z1::kMinishPortalAnchorLocalX;
 std::int16_t g_player_feet_y = z1::kMinishPortalAnchorLocalY;
 std::int16_t g_room_origin_x = 0, g_room_origin_y = 0;
+// Captured from the F0 open-yard frame: these source scrolls place the
+// flower-patch candidate at screen (78,58), front-left of Link.
+std::int16_t g_room_scroll_x = 0x1f2, g_room_scroll_y = 0x156;
 unsigned g_bus_write_count = 0;
 bool g_background_publish_allowed = true;
 bool g_focus_publish_allowed = true;
@@ -373,6 +376,8 @@ extern "C" std::uint16_t bus_read_u16(std::uint32_t address) {
     if (address == 0x03001192) return static_cast<std::uint16_t>(g_player_feet_y);
     if (address == 0x03000BF6) return static_cast<std::uint16_t>(g_room_origin_x);
     if (address == 0x03000BF8) return static_cast<std::uint16_t>(g_room_origin_y);
+    if (address == 0x03000BFA) return static_cast<std::uint16_t>(g_room_scroll_x);
+    if (address == 0x03000BFC) return static_cast<std::uint16_t>(g_room_scroll_y);
     return 0;  // The saved Mode 3 VRAM snapshot is irrelevant to this bridge test.
 }
 extern "C" std::uint32_t bus_read_u32(std::uint32_t address) {
@@ -394,7 +399,11 @@ bool enter_portal(ArmCpuState* cpu) {
     g_keyinput = 0x03ff;
     ++g_frame;
     (void)gba_mod_function_entry(0x0805E5C0u, 1, cpu);
-    if (!g_foreign_overlay || g_foreign_background || g_foreign_focus) return false;
+    if (!g_foreign_overlay || g_foreign_background || g_foreign_focus ||
+        g_foreign_overlay->x != 78 || g_foreign_overlay->y != 58 ||
+        g_foreign_overlay->width != z1::kMinishPortalWidth ||
+        g_foreign_overlay->height != z1::kMinishPortalHeight)
+        return false;
     g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
     ++g_frame;
     (void)gba_mod_function_entry(0x0805E5C0u, 1, cpu);
