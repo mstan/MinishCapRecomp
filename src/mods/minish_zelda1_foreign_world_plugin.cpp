@@ -40,6 +40,14 @@ constexpr std::uint32_t kPlayerDraw = 0x03001178, kPlayerKilled = 0x03003FBC;
 constexpr std::uint32_t kPlayerMoveLocks = 0x03003FB0, kPausePlayer = 0x03003F8A;
 constexpr std::uint32_t kPlayerMacro = 0x0300401C, kMessageState = 0x02000050;
 constexpr std::uint32_t kPriorityTimer = 0x03003DC8;
+// Source: pinned linker map / HUD layout mirrored by minish_extended_view.cpp.
+// Each active gHUD element records its OAM allocation (tile base/count) and
+// authored screen anchor.  This lets foreign presentation retain the complete
+// live HUD without treating a priority class as UI.
+constexpr std::uint32_t kHud = 0x0200AF00;
+constexpr std::uint32_t kHudElements = kHud + 0x34;
+constexpr std::uint32_t kOam = 0x07000000;
+constexpr std::uint32_t kHudElementSize = 0x20;
 // Source: Entity x/y at +0x2C/+0x30, RoomControls scroll at +0x0A/+0x0C.
 // The high Q16.16 half is an immutable source feet anchor for the PPU-only
 // transform; it is never written by this plugin.
@@ -87,6 +95,45 @@ std::int16_t read_guest_s16(std::uint32_t address) {
     return static_cast<std::int16_t>(bus_read_u16(address));
 }
 
+struct HudOamMask { std::uint64_t lo = 0, hi = 0; };
+
+int hud_distance(int a, int b) { return a >= b ? a - b : b - a; }
+
+HudOamMask read_live_hud_oam_mask() {
+    HudOamMask result;
+    for (unsigned oam_index = 0; oam_index < 128; ++oam_index) {
+        const std::uint32_t entry = kOam + oam_index * 8u;
+        const std::uint16_t attr0 = bus_read_u16(entry);
+        if ((attr0 & 0x0200u) != 0) continue;
+        const std::uint16_t attr1 = bus_read_u16(entry + 2u);
+        const std::uint16_t attr2 = bus_read_u16(entry + 4u);
+        const unsigned tile = attr2 & 0x3ffu;
+        const int raw_x = attr1 & 0x1ffu;
+        int raw_y = attr0 & 0xffu;
+        if (raw_y >= 160) raw_y -= 256;
+        bool hud = false;
+        for (unsigned i = 0; i < 24 && !hud; ++i) {
+            const std::uint32_t element = kHudElements + i * kHudElementSize;
+            if ((bus_read_u8(element) & 3u) != 3u) continue;
+            const unsigned type = bus_read_u8(element + 1u);
+            if (type > 10u) continue;
+            const unsigned base = bus_read_u16(element + 0x1au) & 0x3ffu;
+            // Button elements report zero despite DrawDirect OAM; the pinned
+            // HUD implementation uses their bounded shared 0x20-tile block.
+            const unsigned span = bus_read_u8(element + 0x19u);
+            const unsigned bounded_span = span != 0 ? span : 0x20u;
+            if (((tile - base) & 0x3ffu) >= bounded_span) continue;
+            const int x = read_guest_s16(element + 0x0cu);
+            const int y = read_guest_s16(element + 0x0eu);
+            hud = hud_distance(raw_x, x) <= 32 && hud_distance(raw_y, y) <= 32;
+        }
+        if (!hud) continue;
+        if (oam_index < 64) result.lo |= UINT64_C(1) << oam_index;
+        else result.hi |= UINT64_C(1) << (oam_index - 64u);
+    }
+    return result;
+}
+
 bool publish_current_foreign_video() {
     if (!g_overworld_session.loaded()) return false;
     const auto level1 = g_level1_adapter.presentation();
@@ -98,6 +145,7 @@ bool publish_current_foreign_video() {
         return false;
     const auto overworld_feet = g_overworld_session.presentation_feet_position();
     const auto cave_position = g_overworld_session.cave_presentation_position();
+    const HudOamMask hud_mask = read_live_hud_oam_mask();
     const auto* focus = g_obj_focus.next(
         static_cast<std::int16_t>(read_guest_s16(kPlayerFeetX) -
                                   read_guest_s16(kRoomScrollX)),
@@ -114,7 +162,8 @@ bool publish_current_foreign_video() {
                                                    kZelda1LinkFeetOffsetY) :
             (cave_position ? cave_position->y : overworld_feet.y),
         bus_read_u16(kPlayerSpriteVramOffset), kPlayerShadowObjTile,
-        (bus_read_u8(kPlayerDraw) & 0x30u) != 0 ? 1u : 0u);
+        (bus_read_u8(kPlayerDraw) & 0x30u) != 0 ? 1u : 0u,
+        hud_mask.lo, hud_mask.hi);
     if (gba_mod_publish_foreign_obj_focus(kZelda1ForeignWorldPluginId, focus) == 0) {
         gba_mod_clear_foreign_obj_focus();
         gba_mod_clear_foreign_background();
@@ -264,13 +313,13 @@ bool observe_cave_interaction(std::uint16_t keyinput) {
         g_cave_a_edge.reset();
         return true;
     }
-    // Explicit, active-low A edges only. The first edge dismisses the
-    // source dialogue; later edges attempt the source control's exact sword
-    // hotspot, so an A press elsewhere cannot manufacture an item.
-    if (!g_cave_a_edge.observe(keyinput, kGbaKeyA)) return true;
-    if (!g_overworld_session.cave_dialogue_acknowledged()) {
-        (void)g_overworld_session.acknowledge_cave_dialogue();
-    } else {
+    // Z_01:UpdatePersonState_Textbox advances independently of input: its
+    // timer emits the verified PersonText glyph stream then UnhaltLink runs
+    // from the final `$C0` marker. Keep A harmless while that text is active;
+    // only post-dialogue A edges may request the exact source sword hotspot.
+    (void)g_overworld_session.tick_cave_dialogue();
+    const bool a_edge = g_cave_a_edge.observe(keyinput, kGbaKeyA);
+    if (g_overworld_session.cave_dialogue_acknowledged() && a_edge) {
         std::string error;
         (void)g_overworld_session.try_take_start_sword(
             &foreign_world_native_state().inventory(), &error);

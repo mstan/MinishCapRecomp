@@ -113,9 +113,9 @@ public:
   // collision is hotspot/tile based rather than an 8x8 sprite rectangle.
   inline static constexpr std::uint8_t kLinkFootprintWidth = 1;
   inline static constexpr std::uint8_t kLinkFootprintHeight = 1;
-  // v7 additionally persists the source-style in-progress eight-pixel walk
-  // segment (ObjGridOffset/ObjDir). v5/v6 records migrate on restore. Bytes
-  // 21..31 are canonical padding;
+  // v8 additionally persists the source textbox's visible-character cursor
+  // and ObjTimer+1-style delay at bytes 21/22. v5/v6/v7 records migrate on
+  // restore. Bytes 23..31 are canonical padding;
   // combat remains at byte 32 to keep FWNS's fixed provider footprint.
   inline static constexpr std::size_t kSerializedSize = 64;
 
@@ -207,6 +207,10 @@ public:
     return area_ == OverworldSessionArea::kCave &&
            cave_control_.dialogue_acknowledged();
   }
+  [[nodiscard]] std::uint8_t cave_dialogue_visible_character_count() const {
+    return area_ == OverworldSessionArea::kCave
+        ? cave_control_.dialogue_visible_character_count() : 0;
+  }
   [[nodiscard]] std::optional<CaveSourcePosition> cave_source_position() const {
     if (area_ != OverworldSessionArea::kCave || !cave_control_.loaded())
       return std::nullopt;
@@ -275,7 +279,7 @@ public:
     out[1] = '1';
     out[2] = 'O';
     out[3] = 'S';
-    out[4] = 7;
+    out[4] = 8;
     out[5] = loaded_ ? 1 : 0;
     out[6] = source_position_.room_id;
     write_i16(&out[7], source_position_.obj_x);
@@ -290,6 +294,8 @@ public:
       out[16] = cave_control_.dialogue_acknowledged() ? 1 : 0;
       out[18] = cave_position.x;
       out[19] = cave_position.y;
+      out[21] = cave_control_.dialogue_visible_character_count();
+      out[22] = cave_control_.dialogue_frame_delay();
     }
     out[17] = static_cast<std::uint8_t>(grid_offset_);
     out[20] = static_cast<std::uint8_t>(walk_direction_);
@@ -310,8 +316,8 @@ public:
       return false;
     }
     std::array<std::uint8_t, kSerializedSize> migrated{};
-    if (!migrate_serialized(blob, &migrated) || !validate_v7(migrated)) {
-      set_error(error, "invalid Zelda1OverworldSession v7 state");
+    if (!migrate_serialized(blob, &migrated) || !validate_v8(migrated)) {
+      set_error(error, "invalid Zelda1OverworldSession v8 state");
       return false;
     }
     const auto next_area = static_cast<OverworldSessionArea>(migrated[11]);
@@ -345,12 +351,14 @@ public:
     if (next_area == OverworldSessionArea::kCave &&
         !restore_cave_control(data, migrated[15] != 0, migrated[16] != 0,
                               migrated[13] != 0, {migrated[18], migrated[19]},
+                              migrated[21], migrated[22],
                               &cave_candidate)) {
       set_error(error, "restored start-cave control state is unreachable");
       return false;
     }
     if (next_area == OverworldSessionArea::kCave &&
         !render_cave_frame(data, migrated[13] != 0, migrated[16] != 0,
+                           migrated[21],
                            &frame_candidate, error))
       return false;
     Ow66OctorokRuntime combat_candidate;
@@ -379,18 +387,25 @@ public:
 
   static bool validate_serialized(std::span<const std::uint8_t> blob) {
     std::array<std::uint8_t, kSerializedSize> migrated{};
-    return migrate_serialized(blob, &migrated) && validate_v7(migrated);
+    return migrate_serialized(blob, &migrated) && validate_v8(migrated);
   }
-  static bool validate_v7(const std::array<std::uint8_t, kSerializedSize> &blob) {
+  static bool validate_v8(const std::array<std::uint8_t, kSerializedSize> &blob) {
     const bool cave = blob[11] == static_cast<std::uint8_t>(OverworldSessionArea::kCave);
     const bool canonical_padding = blob.size() == kSerializedSize &&
-        std::all_of(blob.begin() + 21, blob.begin() + 32,
+        std::all_of(blob.begin() + 23, blob.begin() + 32,
                     [](std::uint8_t byte) { return byte == 0; });
     const bool cave_fields = !cave
         ? blob[12] == 0 && blob[15] == 0 && blob[16] == 0 &&
-          blob[18] == 0 && blob[19] == 0
+          blob[18] == 0 && blob[19] == 0 && blob[21] == 0 && blob[22] == 0
         : blob[12] == 16 && blob[15] <= 1 && blob[16] <= 1 && blob[17] == 0 &&
-          blob[20] == 0 && !(blob[15] != 0 && (blob[16] != 0 || blob[13] != 0));
+          blob[20] == 0 &&
+          blob[21] <= Zelda1StartCaveControl::kFirstQuestStartDialogueGlyphCount &&
+          blob[22] <= Zelda1StartCaveControl::kTextboxFramesPerGlyph &&
+          !(blob[15] != 0 && (blob[16] != 0 || blob[13] != 0 ||
+                              blob[21] != 0 || blob[22] != 0)) &&
+          !(blob[16] != 0 &&
+            (blob[21] != Zelda1StartCaveControl::kFirstQuestStartDialogueGlyphCount ||
+             blob[22] != 0));
     const auto offset = static_cast<std::int8_t>(blob[17]);
     const auto direction = static_cast<OverworldWalkDirection>(blob[20]);
     const bool walk_segment = offset >= -7 && offset <= 7 &&
@@ -398,7 +413,7 @@ public:
         ((offset == 0) == (direction == OverworldWalkDirection::kNone)) &&
         (offset == 0 || next_grid_segment_is_consistent(read_i16(&blob[7]), read_i16(&blob[9]), offset, direction));
     return blob.size() == kSerializedSize && blob[0] == 'Z' && blob[1] == '1' &&
-               blob[2] == 'O' && blob[3] == 'S' && blob[4] == 7 && blob[5] == 1 &&
+               blob[2] == 'O' && blob[3] == 'S' && blob[4] == 8 && blob[5] == 1 &&
            blob[6] < kRoomCount &&
            source_coordinates_in_bounds(read_i16(&blob[7]), read_i16(&blob[9])) &&
            blob[11] <= static_cast<std::uint8_t>(OverworldSessionArea::kCave) &&
@@ -449,7 +464,7 @@ public:
       return OverworldSessionCaveResult::kInvalid;
     OwFramebuffer cave_frame{};
     if (!render_cave_frame(*loader_.first_quest_data(), start_sword_acquired_,
-                           false, &cave_frame, nullptr))
+                           false, 0, &cave_frame, nullptr))
       return OverworldSessionCaveResult::kInvalid;
     framebuffer_ = cave_frame;
     area_ = OverworldSessionArea::kCave;
@@ -467,7 +482,26 @@ public:
     if (!candidate_control.acknowledge_dialogue()) return false;
     OwFramebuffer candidate{};
     if (!render_cave_frame(*loader_.first_quest_data(), start_sword_acquired_,
-                           true, &candidate, nullptr))
+                           true, candidate_control.dialogue_visible_character_count(),
+                           &candidate, nullptr))
+      return false;
+    cave_control_ = candidate_control;
+    framebuffer_ = candidate;
+    return true;
+  }
+
+  // Z_01:UpdatePersonState_Textbox is an ordinary per-frame cave-person
+  // update, not an input edge. Stage control and pixels together so a failed
+  // source render cannot advance/unhalt a persisted session.
+  bool tick_cave_dialogue() {
+    if (area_ != OverworldSessionArea::kCave) return false;
+    Zelda1StartCaveControl candidate_control = cave_control_;
+    if (!candidate_control.tick_dialogue()) return false;
+    OwFramebuffer candidate{};
+    if (!render_cave_frame(*loader_.first_quest_data(), start_sword_acquired_,
+                           candidate_control.dialogue_acknowledged(),
+                           candidate_control.dialogue_visible_character_count(),
+                           &candidate, nullptr))
       return false;
     cave_control_ = candidate_control;
     framebuffer_ = candidate;
@@ -516,6 +550,7 @@ public:
       return OverworldSessionSwordResult::kNotAtSourcePickupHotspot;
     OwFramebuffer frame_candidate{};
     if (!render_cave_frame(*loader_.first_quest_data(), true, true,
+                           Zelda1StartCaveControl::kFirstQuestStartDialogueGlyphCount,
                            &frame_candidate, error))
       return OverworldSessionSwordResult::kInvalid;
     using namespace minish::foreign_world;
@@ -740,17 +775,31 @@ private:
     if (!out || blob.size() != kSerializedSize || blob[0] != 'Z' ||
         blob[1] != '1' || blob[2] != 'O' || blob[3] != 'S' || blob[5] != 1)
       return false;
+    if (blob[4] == 8) {
+      std::copy(blob.begin(), blob.end(), out->begin());
+      return true;
+    }
     if (blob[4] == 7) {
       std::copy(blob.begin(), blob.end(), out->begin());
+      (*out)[4] = 8;
+      // v7 had no textbox cursor. A completed legacy cave must retain the
+      // source nametable result; an incomplete one resumes from its first
+      // transfer rather than retaining the obsolete A-only gate.
+      if ((*out)[11] == static_cast<std::uint8_t>(OverworldSessionArea::kCave) &&
+          (*out)[16] != 0)
+        (*out)[21] = Zelda1StartCaveControl::kFirstQuestStartDialogueGlyphCount;
       return true;
     }
     if (blob[4] == 6) {
       std::copy(blob.begin(), blob.end(), out->begin());
-      (*out)[4] = 7;
+      (*out)[4] = 8;
       // v6 had byte 17 canonical zero and no direction state. A restored
       // record is therefore at a source grid boundary with no carried input.
       (*out)[17] = 0;
       (*out)[20] = 0;
+      if ((*out)[11] == static_cast<std::uint8_t>(OverworldSessionArea::kCave) &&
+          (*out)[16] != 0)
+        (*out)[21] = Zelda1StartCaveControl::kFirstQuestStartDialogueGlyphCount;
       return true;
     }
     // v5 persisted cropped uint8 coordinates.  Its grammar is checked
@@ -774,22 +823,27 @@ private:
         (!combat_present && !std::all_of(blob.begin()+32, blob.end(), [](std::uint8_t b){ return b == 0; })))
       return false;
     out->fill(0);
-    (*out)[0]='Z'; (*out)[1]='1'; (*out)[2]='O'; (*out)[3]='S'; (*out)[4]=7;
+    (*out)[0]='Z'; (*out)[1]='1'; (*out)[2]='O'; (*out)[3]='S'; (*out)[4]=8;
     (*out)[5]=1; (*out)[6]=blob[6];
     write_i16(&(*out)[7], static_cast<std::int16_t>(blob[7] + 8));
     write_i16(&(*out)[9], static_cast<std::int16_t>(blob[8] + 72));
     (*out)[11]=blob[9]; (*out)[12]=blob[10]; (*out)[13]=blob[11]; (*out)[14]=blob[12];
     (*out)[15]=blob[13]; (*out)[16]=blob[14]; (*out)[18]=blob[16]; (*out)[19]=blob[17];
+    if ((*out)[11] == static_cast<std::uint8_t>(OverworldSessionArea::kCave) &&
+        (*out)[16] != 0)
+      (*out)[21] = Zelda1StartCaveControl::kFirstQuestStartDialogueGlyphCount;
     std::copy(blob.begin()+32, blob.end(), out->begin()+32);
     return true;
   }
   static bool render_cave_frame(const FirstQuestData &data, bool sword_acquired,
                                 bool dialogue_acknowledged,
+                                std::uint8_t visible_dialogue_characters,
                                 OwFramebuffer *frame, std::string *error) {
     std::vector<std::uint8_t> patterns;
     if (!copy_overworld_background_from_verified_prg(data, &patterns, error) ||
         !render_first_quest_start_cave(data, patterns,
-                                       {sword_acquired, dialogue_acknowledged},
+                                       {sword_acquired, dialogue_acknowledged,
+                                        visible_dialogue_characters},
                                        frame)) {
       if (error && error->empty())
         set_error(error, "could not source-render start cave control frame");
@@ -821,12 +875,15 @@ private:
   static bool restore_cave_control(const FirstQuestData &data, bool entering,
                                    bool dialogue_acknowledged, bool sword_acquired,
                                    CaveSourcePosition target,
+                                   std::uint8_t visible_dialogue_characters,
+                                   std::uint8_t dialogue_frame_delay,
                                    Zelda1StartCaveControl *out) {
     if (!out) return false;
     Zelda1StartCaveControl base;
     if (!base.load(data)) return false;
     if (entering) {
-      if (dialogue_acknowledged || sword_acquired ||
+      if (dialogue_acknowledged || sword_acquired || visible_dialogue_characters != 0 ||
+          dialogue_frame_delay != 0 ||
           target.x != Zelda1StartCaveControl::kEntryStart.x ||
           target.y != Zelda1StartCaveControl::kEntryStart.y)
         return false;
@@ -836,12 +893,17 @@ private:
     if (!base.settle_entry()) return false;
     if (!dialogue_acknowledged) {
       if (sword_acquired || target.x != Zelda1StartCaveControl::kEntrySettled.x ||
-          target.y != Zelda1StartCaveControl::kEntrySettled.y)
+          target.y != Zelda1StartCaveControl::kEntrySettled.y ||
+          !base.restore_dialogue_progress(visible_dialogue_characters,
+                                          dialogue_frame_delay))
         return false;
       *out = base;
       return true;
     }
-    if (!base.acknowledge_dialogue()) return false;
+    if (visible_dialogue_characters !=
+            Zelda1StartCaveControl::kFirstQuestStartDialogueGlyphCount ||
+        dialogue_frame_delay != 0 || !base.acknowledge_dialogue())
+      return false;
     if (sword_acquired) {
       Zelda1StartCaveControl with_sword = base;
       if (!move_control_to(&with_sword, {0x78, 0x98}, false) ||

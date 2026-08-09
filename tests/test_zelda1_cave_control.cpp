@@ -2,6 +2,7 @@
 #include "foreign_worlds/zelda1/zelda1_cave_renderer.h"
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -36,6 +37,50 @@ bool same_rectangle(const z1::OwFramebuffer& first, const z1::OwFramebuffer& sec
       if (first[py * z1::kOwRenderWidth + px] != second[py * z1::kOwRenderWidth + px])
         return false;
   return true;
+}
+
+bool different_rectangle(const z1::OwFramebuffer& first, const z1::OwFramebuffer& second,
+                         unsigned x, unsigned y, unsigned width, unsigned height) {
+  return !same_rectangle(first, second, x, y, width, height);
+}
+
+std::uint64_t framebuffer_hash(const z1::OwFramebuffer& frame) {
+  std::uint64_t hash = 1469598103934665603ull;
+  for (const auto pixel : frame) {
+    hash ^= pixel;
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+
+char source_text_glyph(std::uint8_t glyph) {
+  if (glyph >= 0x0a && glyph <= 0x23)
+    return static_cast<char>('A' + glyph - 0x0a);
+  switch (glyph) {
+  case 0x24:
+  case 0x25: return ' ';
+  case 0x29: return '!';
+  case 0x2a: return '\'';
+  case 0x2c: return '.';
+  default: return '?';
+  }
+}
+
+bool decode_start_cave_dialogue_rows(
+    const z1::FirstQuestStartCaveDialogueFacts& facts,
+    std::array<std::string, 3>* rows) {
+  if (!rows) return false;
+  rows->fill({});
+  unsigned row = 0;
+  for (const std::uint8_t encoded : facts.encoded) {
+    const std::uint8_t glyph = encoded & 0x3f;
+    (*rows)[row].push_back(source_text_glyph(glyph));
+    const std::uint8_t marker = encoded & 0xc0;
+    if (marker == 0) continue;
+    if (marker == 0xc0) return row == 1;
+    row = marker == 0x40 ? 2 : 1;
+  }
+  return false;
 }
 
 int test_synthetic() {
@@ -76,30 +121,56 @@ int test_actual(const char* path) {
   auto data = z1::FirstQuestData::create(std::move(*prg), &error);
   if (!data) return fail("actual first-quest data rejected: " + error);
   std::vector<std::uint8_t> patterns;
-  z1::OwFramebuffer before_dialogue{}, dialogue_complete{}, sword_taken{};
+  z1::OwFramebuffer before_dialogue{}, dialogue_in_progress{}, dialogue_complete{}, sword_taken{};
   z1::FirstQuestStartCaveFacts render_facts{};
+  z1::FirstQuestStartCaveDialogueFacts dialogue_facts{};
   if (!z1::copy_overworld_background_from_verified_prg(*data, &patterns, &error) ||
-      !z1::render_first_quest_start_cave(*data, patterns, {false, false},
+      !z1::get_first_quest_start_cave_dialogue(*data, &dialogue_facts) ||
+      !z1::render_first_quest_start_cave(*data, patterns, {false, false, 0},
                                          &before_dialogue, &render_facts) ||
-      !z1::render_first_quest_start_cave(*data, patterns, {false, true},
+      !z1::render_first_quest_start_cave(*data, patterns, {false, false, 10},
+                                         &dialogue_in_progress) ||
+      !z1::render_first_quest_start_cave(*data, patterns, {false, true, 0},
                                          &dialogue_complete) ||
-      !z1::render_first_quest_start_cave(*data, patterns, {true, true},
+      !z1::render_first_quest_start_cave(*data, patterns, {true, true, 0},
                                          &sword_taken))
     return fail("source cave sprite render failed: " + error);
+  std::array<std::string, 3> dialogue_rows{};
+  if (!decode_start_cave_dialogue_rows(dialogue_facts, &dialogue_rows) ||
+      dialogue_facts.line_starts != std::array<std::uint8_t, 3>{{0xc4, 0xe4, 0xa4}} ||
+      dialogue_facts.used_line_starts != std::array<std::uint8_t, 2>{{0xa4, 0xc4}} ||
+      dialogue_facts.visible_glyph_count != 37 ||
+      dialogue_facts.line_transition_count != 1 || dialogue_facts.final_marker != 0xc0 ||
+      dialogue_facts.encoded[21] != 0x98 || dialogue_facts.encoded.back() != 0xec ||
+      dialogue_rows[0] != "  IT'S DANGEROUS TO GO" ||
+      dialogue_rows[1] != "    ALONE! TAKE THIS." || !dialogue_rows[2].empty())
+    return fail("actual-ROM selector-zero textbox decode/line markers changed");
   // InitCave creates both the Old Man and fires before source dialogue
   // acknowledgement, while the persistent sword bit removes only the person.
   if (render_facts.old_man_visual_is_opaque || !render_facts.old_man_visible_before_sword ||
       !render_facts.fire_static_frame_zero || !render_facts.fire_visible_before_and_after_sword ||
-      before_dialogue != dialogue_complete || before_dialogue == sword_taken ||
-      !same_rectangle(before_dialogue, sword_taken, 0x48 - 8, 0x80 - 72, 16, 8) ||
-      !same_rectangle(before_dialogue, sword_taken, 0xa8 - 8, 0x80 - 72, 16, 8) ||
-      same_rectangle(before_dialogue, sword_taken, 0x78 - 8, 0x80 - 72, 16, 8))
+      before_dialogue == dialogue_in_progress || dialogue_in_progress == dialogue_complete ||
+      dialogue_complete == sword_taken ||
+      // Z_07 writes PPUCTRL=$30: cave OAM uses the source 8x16 sprite mode.
+      // Both fires must persist in their complete 16x16 paired-OAM regions;
+      // the Old Man's two 8x16 sides and sword's narrow 8x16 OAM entry must
+      // disappear with their respective source state.
+      !same_rectangle(before_dialogue, sword_taken, 0x48 - 8, 0x80 - 72, 16, 16) ||
+      !same_rectangle(before_dialogue, sword_taken, 0xa8 - 8, 0x80 - 72, 16, 16) ||
+      same_rectangle(before_dialogue, sword_taken, 0x78 - 8, 0x80 - 72, 16, 16) ||
+      same_rectangle(before_dialogue, sword_taken, 0x78 + 4 - 8, 0x98 - 72, 8, 16) ||
+      // `$21A4`/`$21C4` become crop-space Y=32/40. `$E4` is not used by
+      // this source record, so row 48 must not acquire a third line.
+      !different_rectangle(before_dialogue, dialogue_complete, 24, 32, 208, 8) ||
+      !different_rectangle(before_dialogue, dialogue_complete, 24, 40, 208, 8) ||
+      different_rectangle(before_dialogue, dialogue_complete, 24, 48, 208, 8))
     return fail("Old Man/fire source visibility contract changed");
   std::filesystem::create_directories("build");
-  if (!write_frame_ppm("build/zelda1_start_cave_before_dialogue.ppm", before_dialogue) ||
-      !write_frame_ppm("build/zelda1_start_cave_dialogue_complete.ppm", dialogue_complete) ||
-      !write_frame_ppm("build/zelda1_start_cave_sword_taken.ppm", sword_taken))
-    return fail("could not write source cave sprite QA artifacts");
+  if (!write_frame_ppm("build/zelda1_start_cave_text_before.ppm", before_dialogue) ||
+      !write_frame_ppm("build/zelda1_start_cave_text_in_progress.ppm", dialogue_in_progress) ||
+      !write_frame_ppm("build/zelda1_start_cave_text_visible.ppm", dialogue_complete) ||
+      !write_frame_ppm("build/zelda1_start_cave_text_after.ppm", sword_taken))
+    return fail("could not write source cave dialogue QA artifacts");
   z1::Zelda1StartCaveControl control;
   z1::StartCaveOldManSpriteFacts old_man{};
   if (!control.load(*data) || control.position().x != 0x70 || control.position().y != 0xdd ||
@@ -107,14 +178,31 @@ int test_actual(const char* path) {
       old_man.object_type != 0x6a || old_man.left.x != 0x78 || old_man.left.y != 0x80 ||
       old_man.right.x != 0x80 || old_man.tile != 0x98 ||
       old_man.left_attribute != 0x02 || old_man.right_attribute != 0x42 ||
+      old_man.top_pattern == old_man.bottom_pattern ||
       old_man.palette != std::array<std::uint8_t, 4>{{0x0f, 0x16, 0x27, 0x30}})
     return fail("source Old Man facts or cave entry changed");
   if (control.move_one(z1::CaveDirection::kUp) != z1::StartCaveMoveResult::kEntering ||
       !control.settle_entry() || control.position().y != 0xad ||
       control.move_one(z1::CaveDirection::kDown) != z1::StartCaveMoveResult::kDialogueBlocked ||
       control.start_sword_eligibility() != z1::StartCaveSwordEligibility::kDialoguePending ||
-      !control.acknowledge_dialogue())
+      !control.tick_dialogue() || control.dialogue_visible_character_count() != 1 ||
+      control.dialogue_frame_delay() != z1::Zelda1StartCaveControl::kTextboxFramesPerGlyph ||
+      control.move_one(z1::CaveDirection::kDown) != z1::StartCaveMoveResult::kDialogueBlocked)
     return fail("entry/dialogue control state changed");
+  for (unsigned frame = 0; frame != z1::Zelda1StartCaveControl::kTextboxFramesPerGlyph;
+       ++frame)
+    if (!control.tick_dialogue()) return fail("source textbox timer stopped");
+  if (control.dialogue_visible_character_count() != 2 ||
+      control.dialogue_frame_delay() != z1::Zelda1StartCaveControl::kTextboxFramesPerGlyph)
+    return fail("source six-frame textbox cadence changed");
+  unsigned total_play_frames = 7;
+  while (!control.dialogue_acknowledged() && total_play_frames++ != 512)
+    if (!control.tick_dialogue()) return fail("source textbox did not make bounded progress");
+  if (!control.dialogue_acknowledged() ||
+      control.dialogue_visible_character_count() !=
+          z1::Zelda1StartCaveControl::kFirstQuestStartDialogueGlyphCount ||
+      control.dialogue_frame_delay() != 0 || total_play_frames != 217)
+    return fail("final $C0 textbox marker did not automatically unhalt Link");
   const auto before_invalid_direction = control.position();
   if (control.move_one(static_cast<z1::CaveDirection>(0x03)) !=
           z1::StartCaveMoveResult::kInvalidDirection ||

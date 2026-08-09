@@ -35,12 +35,14 @@ bool get_first_quest_start_cave_old_man_sprite(
     const FirstQuestData& data, StartCaveOldManSpriteFacts* out) {
   if (!out) return false;
   const auto prg = data.prg().bytes();
-  if (kOldManPatternPrgOffset + 16 > prg.size() ||
+  if (kOldManPatternPrgOffset + 32 > prg.size() ||
       kOldManSpritePalettePrgOffset + 4 > prg.size())
     return false;
   StartCaveOldManSpriteFacts candidate{};
-  std::copy_n(prg.begin() + kOldManPatternPrgOffset, candidate.pattern.size(),
-              candidate.pattern.begin());
+  std::copy_n(prg.begin() + kOldManPatternPrgOffset, candidate.top_pattern.size(),
+              candidate.top_pattern.begin());
+  std::copy_n(prg.begin() + kOldManPatternPrgOffset + candidate.top_pattern.size(),
+              candidate.bottom_pattern.size(), candidate.bottom_pattern.begin());
   std::copy_n(prg.begin() + kOldManSpritePalettePrgOffset,
               candidate.palette.size(), candidate.palette.begin());
   *out = candidate;
@@ -55,6 +57,8 @@ bool Zelda1StartCaveControl::load(const FirstQuestData& data) {
   loaded_ = true;
   entering_ = true;
   dialogue_acknowledged_ = false;
+  dialogue_visible_character_count_ = 0;
+  dialogue_frame_delay_ = 0;
   start_sword_taken_ = false;
   return true;
 }
@@ -66,9 +70,49 @@ bool Zelda1StartCaveControl::settle_entry() {
   return true;
 }
 
+bool Zelda1StartCaveControl::tick_dialogue() {
+  if (!loaded_ || entering_ || dialogue_acknowledged_) return false;
+  // UpdatePersonState_Textbox first observes ObjTimer+1. A transfer sets it
+  // to six; the ordinary object timer tick happens between later calls.
+  if (dialogue_frame_delay_ != 0) {
+    --dialogue_frame_delay_;
+    // Z_07's global timer decrement runs before UpdatePersonState_Textbox.
+    // When a six-frame delay reaches zero, that same source frame transfers
+    // the next glyph rather than introducing a seventh idle update.
+    if (dialogue_frame_delay_ != 0) return true;
+  }
+  if (dialogue_visible_character_count_ < kFirstQuestStartDialogueGlyphCount) {
+    ++dialogue_visible_character_count_;
+    if (dialogue_visible_character_count_ == kFirstQuestStartDialogueGlyphCount) {
+      // `$EC` is itself the final transferred glyph. Its `$C0` high bits
+      // select the first-line address and call UnhaltLink before the routine
+      // exits; unlike earlier glyphs, it leaves no delay gate on control.
+      dialogue_acknowledged_ = true;
+      dialogue_frame_delay_ = 0;
+    } else {
+      dialogue_frame_delay_ = kTextboxFramesPerGlyph;
+    }
+    return true;
+  }
+  return false;
+}
+
+bool Zelda1StartCaveControl::restore_dialogue_progress(
+    std::uint8_t visible_character_count, std::uint8_t frame_delay) {
+  if (!loaded_ || entering_ || dialogue_acknowledged_ ||
+      visible_character_count > kFirstQuestStartDialogueGlyphCount ||
+      frame_delay > kTextboxFramesPerGlyph)
+    return false;
+  dialogue_visible_character_count_ = visible_character_count;
+  dialogue_frame_delay_ = frame_delay;
+  return true;
+}
+
 bool Zelda1StartCaveControl::acknowledge_dialogue() {
   if (!loaded_ || entering_) return false;
   dialogue_acknowledged_ = true;
+  dialogue_visible_character_count_ = kFirstQuestStartDialogueGlyphCount;
+  dialogue_frame_delay_ = 0;
   return true;
 }
 

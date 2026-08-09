@@ -163,6 +163,26 @@ view is horizontal-only, however, and exposes only native Y=0..159. Showing
 all 176 rows requires a separate vertical presentation change; until then the
 world adapter must pan/crop vertically.
 
+### Foreign-frame HUD preservation
+
+Foreign terrain replaces native BG composition before OBJ composition. The
+only guest-BG exception is the bounded Minish heart/charge region: pinned TMC
+`src/ui.c:DrawHearts` writes `gBG0Buffer[0x20...]`, and the host extended-view
+mapping pins this to BG0 map columns 0..11 and rows 1..3 (native x=0..95,
+y=8..31), while `HUD_HIDE_HEARTS` is bit `0x10`. The trusted focus descriptor
+names those **BG0 tile-map cells** and independently bounds the native output
+to x=0..95/y=8..31. The PPU evaluates both gates after live BG0 HOFS/VOFS and
+tile-ring mapping and preserves only their nontransparent BG0 texels. A named
+cell that scrolls into a playfield row is rejected. It must never preserve the
+already-composed top pixel: a higher-priority native room BG in that area would
+otherwise leak cave terrain or a house prop over Zelda. `src/interrupts.c` commits BG0CNT/HOFS/
+VOFS from `gScreen`, and UI initialization sets BG0CNT to `0x1F0C`.
+
+The foreign OBJ policy is independent: exact current HUD OAM entries are
+allowed alongside source-tile-matched Link body/shadow; nonmatching playfield
+OBJs are suppressed. This leaves the complete heart meter, Link and shadow,
+and HUD visible while eliminating the distant source house door.
+
 Foreign state belongs in a versioned runner/plugin sidecar keyed to the active
 Minish save slot. Do not consume unknown `SaveFile` padding: native sectors are
 duplicated, checksummed, and written asynchronously.

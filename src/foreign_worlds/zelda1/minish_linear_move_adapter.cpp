@@ -77,7 +77,8 @@ const GbaForeignObjFocusTransform* ForeignObjFocusDoubleBuffer::next(
     std::int16_t source_feet_x, std::int16_t source_feet_y,
     std::int16_t destination_feet_x, std::int16_t destination_feet_y,
     std::uint16_t source_obj_tile_base, std::uint16_t source_aux_tile_base,
-    std::uint16_t source_aux_tile_count) {
+    std::uint16_t source_aux_tile_count, std::uint64_t hud_oam_mask_lo,
+    std::uint64_t hud_oam_mask_hi) {
     GbaForeignObjFocusTransform& out = buffers_[next_index_];
     out = {
         GBA_FOREIGN_OBJ_FOCUS_ABI_VERSION,
@@ -95,7 +96,7 @@ const GbaForeignObjFocusTransform* ForeignObjFocusDoubleBuffer::next(
             GBA_FOREIGN_OBJ_FOCUS_SOURCE_TILE_RANGE |
             GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_LARGE_NEARBY |
             GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_NEARBY_NONMATCHING |
-            GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_NONMATCHING_EXCEPT_HUD_PRIORITY,
+            GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_NONMATCHING_EXCEPT_HUD_OAM,
         source_obj_tile_base,
         16,
         source_aux_tile_base,
@@ -106,11 +107,28 @@ const GbaForeignObjFocusTransform* ForeignObjFocusDoubleBuffer::next(
         // read proportionally without changing the NES coordinate/collision
         // model or zooming the room.
         192,
-        // Live native OAM capture classifies HUD entries at OBJ priority 0/1;
-        // Link, shadow, house door, and room props are priority 2.  Retain
-        // only that HUD class outside the exact source player allocations.
+        0,
+        hud_oam_mask_lo,
+        hud_oam_mask_hi,
+        // Minish's pinned `DrawHearts` writes gBG0Buffer cells [0x20..]:
+        // BG0 tile-map columns 0..11, rows 1..3.  The PPU evaluates this
+        // source-cell range after live BG0 scroll/ring mapping and retains
+        // only its nontransparent BG0 texels, never a composed room pixel.
+        // That preserves the meter without exposing the cave playfield.
+        0x01,
         1,
         0,
+        0,
+        1,
+        12,
+        3,
+        // The same source map cells are HUD only at native x=0..95/y=8..31.
+        // Scroll can wrap these cells elsewhere after dialogue; that output
+        // bound is an independent required gate, never a composed-pixel mask.
+        0,
+        8,
+        96,
+        24,
     };
     next_index_ ^= 1u;
     return &out;

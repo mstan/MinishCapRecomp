@@ -48,9 +48,10 @@ int main() {
             return (std::cerr << "FAIL: handled hook modified a non-PC register\n", 1);
 
     z1::ForeignObjFocusDoubleBuffer focus;
-    const auto* first = focus.next(90, 70, 120, 80, 0x160, 1, 1);
+    const auto* first = focus.next(90, 70, 120, 80, 0x160, 1, 1,
+                                   0x5u, 0x8000000000000000ull);
     const auto first_copy = *first;
-    const auto* second = focus.next(91, 71, 121, 81, 0x170, 0, 0);
+    const auto* second = focus.next(91, 71, 121, 81, 0x170, 0, 0, 0, 0);
     if (!first || !second || first == second ||
         std::memcmp(first, &first_copy, sizeof(first_copy)) != 0 ||
         first->abi_version != GBA_FOREIGN_OBJ_FOCUS_ABI_VERSION ||
@@ -59,13 +60,22 @@ int main() {
                           GBA_FOREIGN_OBJ_FOCUS_SOURCE_TILE_RANGE |
                           GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_LARGE_NEARBY |
                           GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_NEARBY_NONMATCHING |
-                          GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_NONMATCHING_EXCEPT_HUD_PRIORITY) ||
+                          GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_NONMATCHING_EXCEPT_HUD_OAM) ||
         first->source_obj_tile_base != 0x160 ||
         first->source_obj_tile_count != 16 ||
         first->source_aux_obj_tile_base != 1 ||
         first->source_aux_obj_tile_count != 1 ||
-         first->source_obj_scale_q8_8 != 192 ||
-         first->hud_obj_priority_max != 1 || first->reserved != 0)
+         first->source_obj_scale_q8_8 != 192 || first->reserved != 0 ||
+         first->hud_oam_mask_lo != 0x5u ||
+         first->hud_oam_mask_hi != 0x8000000000000000ull ||
+         first->hud_bg_layer_mask != 0x01 ||
+         first->hud_bg_map_rect_count != 1 || first->hud_bg_reserved != 0 ||
+         first->hud_bg_map_tile_x != 0 || first->hud_bg_map_tile_y != 1 ||
+         first->hud_bg_map_tile_width != 12 ||
+         first->hud_bg_map_tile_height != 3 ||
+         first->hud_bg_output_x != 0 || first->hud_bg_output_y != 8 ||
+         first->hud_bg_output_width != 96 ||
+         first->hud_bg_output_height != 24)
         return (std::cerr << "FAIL: focus descriptor double-buffer is not stable\n", 1);
     z1::ActiveLowButtonEdge edge;
     if (edge.observe(0x03ff, 1) || !edge.observe(0x03fe, 1) ||

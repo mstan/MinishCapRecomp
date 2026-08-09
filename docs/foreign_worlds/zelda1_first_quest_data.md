@@ -142,11 +142,14 @@ this normal cave `$77` has source cave index `$10`. On exit, `InitMode2` derives
 returns at the last value, viewport `(56,21)`, where the original starts its
 walk-down animation.
 
-The session record is fixed 64-byte `Z1OS` version 7. It persists signed source
+The session record is fixed 64-byte `Z1OS` version 8. It persists signed source
 coordinates, source grid phase/direction, overworld/cave area, source cave
-index, and one-way starting-sword state; strict v5/v6 migration produces a
-canonical settled source-grid record. Restore rejects an area/index combination
-that does not agree with the currently loaded room's source entrance record.
+index, one-way starting-sword state, and (for the active start-cave textbox)
+the visible-glyph cursor plus its source `ObjTimer+1` delay. Strict v5/v6/v7
+migration produces a canonical settled source-grid record; v7's former
+unacknowledged A gate resumes at the first automatic glyph. Restore rejects an
+area/index combination that does not agree with the currently loaded room's
+source entrance record.
 
 ## First Quest starting sword cave
 
@@ -158,14 +161,32 @@ and applies `InitModeB_Sub5`'s room `$44` AttrsA palette selector. It remains
 the same centered 240x160 BGR555 playfield crop.
 
 `Z_01:InitCave` proves the cave person is source object `$6A` at `($78,$80)`.
-Its full sprite composition and dialogue stream are still opaque, so the
-renderer intentionally emits neither a translated Old Man glyph nor text.
-`Z_01:InitCaveContinue` copies source cave-item bytes `$3F,$01,$7F`; the
-middle `$01` is the wooden sword. `DrawCaveItems` locates it at `($78,$98)`,
-and the renderer follows item-slot zero's `$20` narrow CHR sprite and sprite
-palette row zero. The pre-pickup actual-ROM frame hashes to
-`9908587190393916943`; the one-way acquired state removes exactly that sprite,
-hashing to `14328559095791455159`.
+The pinned reset in `Z_07` writes `PPUCTRL=$30`, selecting 8x16 OAM sprites:
+each OAM tile is its upper 8x8 CHR tile followed by the next lower tile. The
+renderer consequently composes the Old Man's mirrored `$98/$99` pair, both
+standing fires' `$5C/$5D` and `$5E/$5F` pairs, and the wooden sword's narrow
+`$20/$21` pair at their source positions, with the source descriptor palette
+and horizontal flip. This is static frame-zero composition only; fire animation
+remains intentionally outside the renderer. `Z_01:InitCaveContinue`
+copies source cave-item bytes `$3F,$01,$7F`; the middle `$01` is the wooden
+sword. `DrawCaveItems` locates it at `($78,$98)`. The pre-pickup actual-ROM
+frame hashes to `1204060643028526704`; the acquired state removes the Old Man
+and sword while retaining both fires, hashing to `863818059061532955`.
+
+The initial cave text is not an A prompt. `PersonText.dat` begins at verified
+PRG offset `16460`, and selector zero occupies its first 43 bytes (the next
+selector begins at `+43`). `Z_01:UpdatePersonState_Textbox` starts at
+`TextboxLineAddrsLo+2 = $A4`, writes a low-six-bit character tile immediately,
+and the global `Z_07` object-timer pass decrements its `$06` delay before the
+next person update. Six `$25` special spaces consume a character cell without
+a delay, leaving 37 timed transfers. The actual record's `$98` after the first
+row selects `$C4`; its final `$EC` selects `$A4` through the `$C0` path and
+calls `UnhaltLink` in that same final-glyph frame. `$E4` is the generic third
+row but is unused by this particular record. The game-owned renderer consumes
+those source tile codes from common background CHR and displays the two
+decoded rows at crop-space Y=32 and Y=40; characters remain visible after
+unhalt just as the source nametable does. `qa-artifacts/cave-dialogue/` holds
+actual-ROM before, in-progress, complete, and post-sword PNG captures.
 
 `Zelda1OverworldSession::try_take_start_sword_at` preserves the source pickup
 gate (X exactly `$78`; `abs(Y-$98) < 6`) while cave movement itself remains an
@@ -217,7 +238,7 @@ pair unchanged; `framebuffer()` then exposes the stable 240x160 BGR555 array.
 shared static geometry. It owns the active OW room plus signed source
 `ObjX/ObjY`; its presentation position is the fixed crop inverse
 `(ObjX-8, ObjY-72)`. World flags, inventory, and actor records remain owned by
-their respective host controllers. Its fixed 64-byte `Z1OS` v7 record restores
+their respective host controllers. Its fixed 64-byte `Z1OS` v8 record restores
 room/frame/geometry failure-atomically from the already loaded,
 caller-identity-validated PRG.
 

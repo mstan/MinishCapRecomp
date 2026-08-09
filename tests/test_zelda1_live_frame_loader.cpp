@@ -654,22 +654,23 @@ int test_actual_ines_path(const char* path) {
         session.move_by(1, 0) != z1::OverworldSessionMoveResult::kBlocked)
         return fail("OW77 source cave mouth did not enter the normal-cave state");
     const auto cave_before_sword = session.framebuffer();
-    if (framebuffer_hash(cave_before_sword) != 15688873919820252475ull ||
+    if (framebuffer_hash(cave_before_sword) != 1204060643028526704ull ||
         !write_frame_ppm("build/zelda1_start_sword_cave_before.ppm", cave_before_sword))
         return fail("start sword cave did not produce its pinned source framebuffer");
     // InitCave creates the Old Man and both fires before Zelda's first
-    // textbox is acknowledged. The static source renderer therefore has no
-    // before/after-dialogue visual difference.
+    // textbox character. The source PPU transfer then writes selector-zero
+    // glyphs at `$21A4`/`$21C4`; its final `$EC`/`$C0` leaves them visible
+    // after UnhaltLink rather than treating dialogue as a host A prompt.
     std::vector<std::uint8_t> cave_patterns;
     z1::OwFramebuffer cave_dialogue_complete{};
     if (!z1::copy_overworld_background_from_verified_prg(*loader.first_quest_data(),
                                                          &cave_patterns, &error) ||
         !z1::render_first_quest_start_cave(*loader.first_quest_data(), cave_patterns,
-                                           {false, true}, &cave_dialogue_complete) ||
-        cave_dialogue_complete != cave_before_sword ||
-        !write_frame_ppm("build/zelda1_start_sword_cave_dialogue_complete.ppm",
+                                           {false, true, 0}, &cave_dialogue_complete) ||
+        cave_dialogue_complete == cave_before_sword ||
+        !write_frame_ppm("build/zelda1_start_sword_cave_text_visible.ppm",
                          cave_dialogue_complete))
-        return fail("source cave dialogue acknowledgement changed static sprites: " + error);
+        return fail("source cave textbox did not write the verified visible text: " + error);
     const auto cave_entry_state = session.serialize();
     const auto cave_entry_position = session.cave_source_position();
     const auto cave_entry_presentation = session.cave_presentation_position();
@@ -683,9 +684,41 @@ int test_actual_ines_path(const char* path) {
             z1::StartCaveMoveResult::kDialogueBlocked ||
         !session.restore(cave_entry_state, &error))
         return fail("start cave did not settle, expose mapped position, or preserve dialogue gate");
+    // A source character writes immediately, then Z_07 decrements ObjTimer
+    // before subsequent person updates. Persist both fields and reject a bad
+    // cursor without mutating the live cave; legacy v7 still migrates into
+    // the automatic flow with its canonical zero cursor/delay.
+    if (!session.tick_cave_dialogue() ||
+        session.cave_dialogue_visible_character_count() != 1)
+        return fail("source start-cave textbox did not begin automatically");
+    const auto text_progress_state = session.serialize();
+    if (text_progress_state[4] != 8 || text_progress_state[21] != 1 ||
+        text_progress_state[22] != z1::Zelda1StartCaveControl::kTextboxFramesPerGlyph ||
+        !z1::Zelda1OverworldSession::validate_serialized(text_progress_state))
+        return fail("Z1OS v8 did not persist textbox cursor/timer");
+    auto corrupt_text_progress = text_progress_state;
+    corrupt_text_progress[21] =
+        z1::Zelda1StartCaveControl::kFirstQuestStartDialogueGlyphCount + 1;
+    if (session.restore(corrupt_text_progress, &error) ||
+        session.serialize() != text_progress_state)
+        return fail("invalid textbox cursor mutated the live session");
+    auto legacy_v7_text_pending = text_progress_state;
+    legacy_v7_text_pending[4] = 7;
+    legacy_v7_text_pending[21] = 0;
+    legacy_v7_text_pending[22] = 0;
+    if (!z1::Zelda1OverworldSession::validate_serialized(legacy_v7_text_pending) ||
+        !session.restore(legacy_v7_text_pending, &error) ||
+        session.serialize()[4] != 8 || session.cave_dialogue_visible_character_count() != 0)
+        return fail("Z1OS v7 cave migration did not retain a valid automatic textbox");
+    unsigned text_frames = 0;
+    while (!session.cave_dialogue_acknowledged() && text_frames++ != 217)
+        if (!session.tick_cave_dialogue())
+            return fail("source start-cave textbox stopped advancing");
+    if (!session.cave_dialogue_acknowledged() || text_frames != 217 ||
+        session.framebuffer() != cave_dialogue_complete)
+        return fail("final source textbox marker did not unhalt with text retained");
     minish::foreign_world::InventoryCore inventory;
-    if (!session.acknowledge_cave_dialogue() ||
-        session.move_cave_by(0, static_cast<std::int16_t>(0x98 - 0xad)) !=
+    if (session.move_cave_by(0, static_cast<std::int16_t>(0x98 - 0xad)) !=
             z1::StartCaveMoveResult::kMoved ||
         session.move_cave_by(0x78 - 0x70, 0) != z1::StartCaveMoveResult::kMoved)
         return fail("cave dialogue acknowledgement or source navigation changed");
@@ -785,9 +818,9 @@ int test_actual_ines_path(const char* path) {
         full_loadout_inventory.serialize() != full_loadout_inventory_before)
         return fail("full A loadout did not failure-atomically reject start sword selection");
     const auto cave_after_sword = session.framebuffer();
-    if (framebuffer_hash(cave_after_sword) != 17774150873886944455ull || cave_after_sword == cave_before_sword ||
+    if (cave_after_sword == cave_before_sword ||
         !write_frame_ppm("build/zelda1_start_sword_cave_after.ppm", cave_after_sword))
-        return fail("taken sword did not change the cave's pinned source framebuffer");
+        return fail("taken sword did not retain source textbox or change cave sprites");
     const auto acquired_cave_state = session.serialize();
     if (!session.restore(acquired_cave_state, &error) || !session.start_sword_acquired() ||
         session.framebuffer() != cave_after_sword ||
@@ -820,10 +853,11 @@ int test_actual_ines_path(const char* path) {
     stage_source_position(&reentry_hotspot, 0x40, 0x4d);
     if (!session.restore(reentry_hotspot, &error) ||
         session.try_enter_cave() != z1::OverworldSessionCaveResult::kEntered ||
-        session.framebuffer() != cave_after_sword ||
-        !same_rectangle(session.framebuffer(), cave_before_sword, 0x48 - 8, 0x80 - 72, 16, 8) ||
-        !same_rectangle(session.framebuffer(), cave_before_sword, 0xa8 - 8, 0x80 - 72, 16, 8) ||
-        same_rectangle(session.framebuffer(), cave_before_sword, 0x78 - 8, 0x80 - 72, 16, 8))
+        session.framebuffer() == cave_after_sword ||
+        !same_rectangle(session.framebuffer(), cave_before_sword, 0x48 - 8, 0x80 - 72, 16, 16) ||
+        !same_rectangle(session.framebuffer(), cave_before_sword, 0xa8 - 8, 0x80 - 72, 16, 16) ||
+        same_rectangle(session.framebuffer(), cave_before_sword, 0x78 - 8, 0x80 - 72, 16, 16) ||
+        same_rectangle(session.framebuffer(), cave_before_sword, 0x78 + 4 - 8, 0x98 - 72, 8, 16))
         return fail("re-entered start cave did not retain fires while hiding sword and Old Man");
     if (!session.restore(initial_state, &error) || session.in_cave() ||
         session.framebuffer() != stable_frame)
