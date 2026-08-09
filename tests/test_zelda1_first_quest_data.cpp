@@ -38,14 +38,29 @@ int test_synthetic_data() {
     bytes[kOverworldBlock + room_id] = 0x11;
     bytes[kOverworldBlock + z1::kRoomCount + room_id] = 0x22;
     bytes[kOverworldBlock + 2 * z1::kRoomCount + room_id] = 0x33;
-    // LayoutRoomOW uses the complete byte as its record index.  Keep this
-    // synthetic layout in the source-backed RoomLayoutsOW range.
+    // Z_05:LayoutRoomOW masks only AttrD bit 7 while deriving the layout
+    // record. Keep this ordinary synthetic layout in the source-backed span.
     bytes[kOverworldBlock + 3 * z1::kRoomCount + room_id] = 0x05;
     bytes[kOverworldBlock + 4 * z1::kRoomCount + room_id] = 0x55;
     bytes[kOverworldBlock + 5 * z1::kRoomCount + room_id] = 0x66;
     for (std::size_t column = 0; column != 16; ++column)
         bytes[kOverworldLayouts + 5 * 16 + column] =
             static_cast<std::uint8_t>(0xa0 + column);
+    // AttrD's high bit controls the object-list encoding, not LayoutRoomOW's
+    // layout index. These are real First Quest values used by OW58/OW38.
+    const std::uint8_t high_bit_room_d3 = 4 + 2 * z1::kOverworldWidth;
+    const std::uint8_t high_bit_room_b7 = 5 + 2 * z1::kOverworldWidth;
+    bytes[kOverworldBlock + 3 * z1::kRoomCount + high_bit_room_d3] = 0xd3;
+    bytes[kOverworldBlock + 3 * z1::kRoomCount + high_bit_room_b7] = 0xb7;
+    for (std::size_t column = 0; column != 16; ++column) {
+        bytes[kOverworldLayouts + 0x53 * 16 + column] =
+            static_cast<std::uint8_t>(0xb0 + column);
+        bytes[kOverworldLayouts + 0x37 * 16 + column] =
+            static_cast<std::uint8_t>(0xc0 + column);
+    }
+    // The named RoomLayoutsOW source span has records $00..$78. A malformed
+    // synthetic AttrD must not spill into the following cave/underworld data.
+    bytes[kOverworldBlock + 3 * z1::kRoomCount] = 0xf9;
     for (std::size_t heap = 0; heap != 16; ++heap) {
         bytes[kColumnDirectoryOw + heap * 2] = 0x00;  // CPU $8000, bank 5.
         bytes[kColumnDirectoryOw + heap * 2 + 1] = 0x80;
@@ -101,6 +116,18 @@ int test_synthetic_data() {
         overworld.layout_columns[15] != 0xaf ||
         data->overworld_room(16, 0, &overworld, &error))
         return fail("16x8 overworld mapping or layout reference was decoded incorrectly");
+
+    z1::OverworldRoomView high_bit_layout{};
+    if (!data->overworld_room(4, 2, &high_bit_layout, &error) ||
+        high_bit_layout.layout_reference != 0x53 ||
+        high_bit_layout.layout_columns[0] != 0xb0 ||
+        high_bit_layout.layout_columns[15] != 0xbf ||
+        !data->overworld_room(5, 2, &high_bit_layout, &error) ||
+        high_bit_layout.layout_reference != 0x37 ||
+        high_bit_layout.layout_columns[0] != 0xc0 ||
+        high_bit_layout.layout_columns[15] != 0xcf ||
+        data->overworld_room(0, 0, &high_bit_layout, &error))
+        return fail("AttrD bit-7 layout masking or RoomLayoutsOW span bounds were incorrect");
 
     z1::OverworldSquareGrid grid{};
     if (!data->overworld_square_grid(overworld, &grid, &error) ||
@@ -283,12 +310,13 @@ int test_explicit_prg_path(const char* path) {
         return fail("OW77 geometry did not match the renderer crop/final-tile plane");
     z1::OwCaveReturnHotspot sword_cave_return{};
     if (!z1::overworld_cave_return_hotspot(*data, 0x77, &sword_cave_return) ||
-        // The $24,$24 mouth comes from SecondarySquaresOW[$0C], selected by
-        // the actual $77 column descriptor, not a renderer-specific overlay.
-        !start_geometry.is_source_warp_trigger_at(56, 21) ||
-        start_geometry.final_tile_at(56, 21) != 0x24 ||
-        start_geometry.final_tile_at(64, 21) != 0x24 ||
-        start_geometry.at(56, 21) != z1::OwGeometryClass::kWalkable ||
+        // CheckWarps reads the $24 mouth through GetCollidableTileStill:
+        // aligned Obj=($40,$4D) samples its final tile at ObjY+$0B.  The
+        // mouth facts are source data, not a renderer-specific overlay.
+        !z1::ow_source_still_is_warp_trigger(start_geometry, 0x40, 0x4d) ||
+        z1::ow_source_still_final_tile(start_geometry, 0x40, 0x4d) != 0x24 ||
+        start_geometry.final_tile_at(56, 16) != 0x24 ||
+        start_geometry.at(56, 16) != z1::OwGeometryClass::kWalkable ||
         sword_cave_return.source_x != 0x40 ||
         sword_cave_return.source_target_y != 0x4d ||
         sword_cave_return.source_initial_y != 0x5d ||

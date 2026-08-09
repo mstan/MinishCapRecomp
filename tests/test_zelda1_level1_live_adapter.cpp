@@ -5,6 +5,7 @@
 #include <iostream>
 #include <queue>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace fw = minish::foreign_world;
@@ -19,44 +20,6 @@ bool add_item(fw::InventoryCore* inventory, fw::CrossWorldItemId id,
                                 fw::ResourcePoolProvenance::Native};
     return inventory->set_item(id, fw::OwnershipFlags::Owned, capability, traits, &error) &&
            inventory->set_loadout_slot(fw::LoadoutId::A, slot, id, &error);
-}
-
-bool walk_to_source_level_hotspot(z1::Zelda1OverworldSession* overworld) {
-    if (!overworld) return false;
-    const auto start = overworld->position();
-    const auto& geometry = overworld->geometry();
-    constexpr int width = z1::kOwRenderWidth, height = z1::kOwRenderHeight;
-    std::vector<int> predecessor(width * height, -2);
-    const int start_index = start.y * width + start.x;
-    predecessor[start_index] = -1;
-    std::queue<int> pending; pending.push(start_index);
-    int goal = -1;
-    constexpr std::array<int, 4> dx{1, -1, 0, 0};
-    constexpr std::array<int, 4> dy{0, 0, 1, -1};
-    while (!pending.empty()) {
-        const int current = pending.front(); pending.pop();
-        const int x = current % width, y = current / width;
-        if (((x + 8) & 15) == 0 && ((y + 72) & 15) == 13 &&
-            geometry.is_source_warp_trigger_at(x, y)) { goal = current; break; }
-        for (unsigned direction = 0; direction < 4; ++direction) {
-            const int nx = x + dx[direction], ny = y + dy[direction];
-            if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-            const int next = ny * width + nx;
-            if (predecessor[next] != -2 || geometry.at(nx, ny) != z1::OwGeometryClass::kWalkable) continue;
-            predecessor[next] = current; pending.push(next);
-        }
-    }
-    if (goal == -1) return false;
-    std::vector<int> path;
-    for (int at = goal; at != start_index; at = predecessor[at]) path.push_back(at);
-    for (auto it = path.rbegin(); it != path.rend(); ++it) {
-        const auto current = overworld->position();
-        const int nx = *it % width, ny = *it / width;
-        if (overworld->move_by(static_cast<std::int16_t>(nx - current.x),
-                               static_cast<std::int16_t>(ny - current.y)) ==
-            z1::OverworldSessionMoveResult::kInvalid) return false;
-    }
-    return true;
 }
 
 // Plan with the same raw Z_07 directional hotspot probes as the session, then
@@ -91,47 +54,68 @@ bool walk_ow77_to_ow37(z1::Zelda1OverworldSession* overworld,
         }
         int tile = tile_at(g, px, py);
         if (tile < 0) return false;
-        if (!dx) { const int adjacent = tile_at(g, px + 8, py); if (adjacent < 0) return false; tile = std::min(tile, adjacent); }
+        if (!dx) { const int adjacent = tile_at(g, px + 8, py); if (adjacent < 0) return false; tile = std::max(tile, adjacent); }
         return z1::ow_final_tile_is_walkable(static_cast<std::uint8_t>(tile));
     };
-    struct State { std::uint8_t room; std::uint16_t x, y; int previous; char glyph; };
+    struct State { std::uint8_t room; std::uint16_t x, y; std::int8_t offset; std::uint8_t direction; int previous; char glyph; };
     struct Step { int x, y; char glyph; };
     constexpr std::array<Step, 4> steps{{{0,-1,'U'}, {-1,0,'L'}, {1,0,'R'}, {0,1,'D'}}};
-    constexpr int width = 241, height = 161;
-    const auto index = [](std::uint8_t room, int x, int y) {
-        return (static_cast<std::size_t>(room) * height + static_cast<std::size_t>(y - 0x3d)) * width + x;
+    const auto key_of = [](const State& state) {
+        return (static_cast<std::uint64_t>(state.room) << 32) |
+            (static_cast<std::uint64_t>(state.x) << 24) |
+            (static_cast<std::uint64_t>(state.y) << 16) |
+            (static_cast<std::uint64_t>(static_cast<std::uint8_t>(state.offset)) << 8) |
+            state.direction;
     };
-    std::vector<int> previous(z1::kRoomCount * width * height, -2);
+    std::unordered_set<std::uint64_t> seen;
     std::vector<State> states;
     const auto source_start = overworld->source_position();
     states.push_back({source_start.room_id, static_cast<std::uint16_t>(source_start.obj_x),
-                      static_cast<std::uint16_t>(source_start.obj_y), -1, 0});
-    previous[index(source_start.room_id, source_start.obj_x, source_start.obj_y)] = 0;
+                      static_cast<std::uint16_t>(source_start.obj_y), 0, 0, -1, 0});
+    seen.insert(key_of(states.front()));
     std::queue<int> pending; pending.push(0); int goal = -1;
     while (!pending.empty() && goal < 0) {
         const int at = pending.front(); pending.pop(); const auto state = states[at];
         const auto* g = room_geometry(state.room); if (!g) return false;
-        if (state.room == 0x37 && (state.x & 15) == 0 && (state.y & 15) == 13 &&
-            z1::ow_final_tile_is_warp_trigger(static_cast<std::uint8_t>(tile_at(*g, state.x, state.y)))) {
+        if (state.room == 0x37 && state.offset == 0 &&
+            (state.x & 15) == 0 && (state.y & 15) == 13 &&
+            z1::ow_source_still_is_warp_trigger(*g, state.x, state.y)) {
             goal = at; break;
         }
         for (const auto step : steps) {
-            int nx = state.x + step.x, ny = state.y + step.y;
-            if (nx < 0 || nx > 0xf0 || ny < 0x3d || ny > 0xdd) continue;
+            int move_x = step.x, move_y = step.y;
+            std::uint8_t direction = step.x < 0 ? 3 : step.x > 0 ? 4 : step.y < 0 ? 1 : 2;
+            if (state.offset != 0) {
+                // The replay planner intentionally holds a cardinal D-pad
+                // direction to the next source grid point.  The session's
+                // separate regression covers Z_05's reverse/perpendicular
+                // input behavior; searching those detours here only produces
+                // noisy, noncanonical traces.
+                if (direction != state.direction) continue;
+                move_x = direction == 3 ? -1 : direction == 4 ? 1 : 0;
+                move_y = direction == 1 ? -1 : direction == 2 ? 1 : 0;
+            }
+            int nx = state.x + move_x, ny = state.y + move_y;
             std::uint8_t room = state.room;
-            const bool edge = (step.x < 0 && nx == 0) || (step.x > 0 && nx == 0xf0) ||
-                (step.y < 0 && ny == 0x3d) || (step.y > 0 && ny == 0xdd);
-            const bool sample_due = (nx & 7) == 0 && (ny & 7) == 5;
+            const bool edge = (move_x < 0 && state.x == 0) || (move_x > 0 && state.x == 0xf0) ||
+                (move_y < 0 && state.y == 0x3d) || (move_y > 0 && state.y == 0xdd);
+            const bool sample_due = state.offset == 0;
             if (edge) {
                 if (!sample_due) continue;
-                const auto e = step.x < 0 ? z1::OwScreenEdge::kWest : step.x > 0 ? z1::OwScreenEdge::kEast :
-                    step.y < 0 ? z1::OwScreenEdge::kNorth : z1::OwScreenEdge::kSouth;
+                const auto e = move_x < 0 ? z1::OwScreenEdge::kWest : move_x > 0 ? z1::OwScreenEdge::kEast :
+                    move_y < 0 ? z1::OwScreenEdge::kNorth : z1::OwScreenEdge::kSouth;
                 if (!z1::overworld_neighbor(room, e, &room)) continue;
-                if (step.x < 0) nx = 0xf0; else if (step.x > 0) nx = 0; else if (step.y < 0) ny = 0xdd; else ny = 0x3d;
-            } else if (sample_due && !probe_walkable(*g, nx, ny, step.x, step.y)) continue;
-            const auto key = index(room, nx, ny); if (previous[key] != -2) continue;
-            previous[key] = static_cast<int>(states.size());
-            states.push_back({room, static_cast<std::uint16_t>(nx), static_cast<std::uint16_t>(ny), at, step.glyph});
+                if (move_x < 0) nx = 0xf0; else if (move_x > 0) nx = 0; else if (move_y < 0) ny = 0xdd; else ny = 0x3d;
+            } else {
+                if (nx < 0 || nx > 0xf0 || ny < 0x3d || ny > 0xdd) continue;
+                if (sample_due && !probe_walkable(*g, state.x, state.y, move_x, move_y)) continue;
+            }
+            std::int8_t offset = static_cast<std::int8_t>(
+                state.offset + (move_x < 0 || move_y < 0 ? -1 : 1));
+            if (edge || offset == 8 || offset == -8) { offset = 0; direction = 0; }
+            const State next{room, static_cast<std::uint16_t>(nx), static_cast<std::uint16_t>(ny), offset, direction, at, step.glyph};
+            if (!seen.insert(key_of(next)).second) continue;
+            states.push_back(next);
             pending.push(static_cast<int>(states.size() - 1));
         }
     }
@@ -144,7 +128,7 @@ bool walk_ow77_to_ow37(z1::Zelda1OverworldSession* overworld,
         const auto result = overworld->move_by(glyph == 'L' ? -1 : glyph == 'R' ? 1 : 0,
                                                glyph == 'U' ? -1 : glyph == 'D' ? 1 : 0);
         if ((result != z1::OverworldSessionMoveResult::kMoved && result != z1::OverworldSessionMoveResult::kCrossedRoom) ||
-            !overworld->restore(overworld->serialize())) return false;
+            !overworld->restore(overworld->serialize())) { std::cerr << "segment replay failed " << glyph << " result=" << static_cast<int>(result) << "\n"; return false; }
         (void)checkpoint;
     }
     if (compressed_trace) {
@@ -162,7 +146,8 @@ bool walk_ow77_to_ow37(z1::Zelda1OverworldSession* overworld,
 }
 
 int actual_rom_route(const char* path) {
-    { // No room jump: actual source-space OW77 -> $67 -> $57 -> $47 -> $37.
+    std::array<std::uint8_t, z1::Zelda1OverworldSession::kSerializedSize> portal_state{};
+    { // No room jump: replay the actual source-space OW77 -> OW37 route.
         z1::Zelda1OverworldSession route;
         std::string route_error, trace;
         const bool loaded = route.load_hash_validated_ines(path, 0x77, &route_error);
@@ -174,13 +159,14 @@ int actual_rom_route(const char* path) {
         z1::Zelda1Level1LiveAdapter route_adapter;
         if (route_adapter.try_enter_from_overworld(route) != z1::Level1LiveResult::kEntered)
             return fail("OW77 source route reached OW37 but did not enter Level 1");
+        portal_state = route.serialize();
         std::cout << "OW77->OW37 source D-pad trace: " << trace << " then portal route\n";
     }
     z1::Zelda1OverworldSession overworld;
     std::string error;
-    if (!overworld.load_hash_validated_ines(path, 0x37, &error) ||
-        !walk_to_source_level_hotspot(&overworld))
-        return fail("could not load OW $37 and walk to its exact source portal: " + error);
+    if (!overworld.load_hash_validated_ines(path, 0x77, &error) ||
+        !overworld.restore(portal_state, &error))
+        return fail("could not restore the replayed OW37 source portal state: " + error);
     z1::Zelda1Level1LiveAdapter adapter;
     const auto enter_result = adapter.try_enter_from_overworld(overworld);
     if (enter_result != z1::Level1LiveResult::kEntered ||

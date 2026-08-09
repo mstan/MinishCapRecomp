@@ -84,7 +84,7 @@ bool valid_zelda_overworld_session_blob(std::span<const std::uint8_t> blob,
                                         std::string* error) {
     if (blob.size() != kZelda1OverworldSessionBlobBytes ||
         !zelda1::Zelda1OverworldSession::validate_serialized(blob)) {
-        set_error(error, "foreign overworld session blob is not a valid Z1OS v5/v6 record");
+        set_error(error, "foreign overworld session blob is not a valid migratable Z1OS v5/v6/v7 record");
         return false;
     }
     return true;

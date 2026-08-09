@@ -22,18 +22,22 @@ Level1Edge edge_for(bool horizontal, bool positive) {
 
 bool Zelda1Level1LiveAdapter::source_level1_hotspot(
     const Zelda1OverworldSession& overworld) {
-    if (!overworld.loaded() || overworld.area() != OverworldSessionArea::kOverworld)
+    if (!overworld.loaded() || overworld.area() != OverworldSessionArea::kOverworld ||
+        !overworld.at_source_grid_point())
         return false;
     const auto position = overworld.source_position();
     if (position.room_id != Zelda1Level1Session::kOverworldEntranceRoom ||
         !overworld.loader().first_quest_data()) return false;
     const unsigned source_x = static_cast<unsigned>(position.obj_x);
     const unsigned source_y = static_cast<unsigned>(position.obj_y);
+    // CheckWarps reaches this OW level path through GetCollidableTileStill.
+    // Its tile fetch uses ObjY + $0b before subtracting the status-bar
+    // origin, while the warp-grid alignment remains the unadjusted ObjY.
+    // Sampling raw ObjY made the adapter accept a point eleven pixels above
+    // the visible Level 1 entrance and reject the actual doorway.
     if ((source_x & 0x0f) != 0 || (source_y & 0x0f) != 0x0d ||
-        source_x >= 256 || source_y < 0x40 || source_y >= 0xf0 ||
-        !ow_final_tile_is_warp_trigger(overworld.geometry().final_tiles[
-            static_cast<std::size_t>((source_y - 0x40) / 8) * kOwPlayfieldTileWidth +
-            static_cast<std::size_t>(source_x / 8)])) return false;
+        !ow_source_still_is_warp_trigger(overworld.geometry(), position.obj_x,
+                                          position.obj_y)) return false;
     OverworldRoomView room{};
     if (!overworld.loader().first_quest_data()->overworld_room(
             position.room_id & 15, position.room_id >> 4, &room)) return false;

@@ -114,7 +114,7 @@ provider catalog empty while the feature is disabled preserves legacy Minish
 savestate compatibility; enabling it after the engine has frozen a snapshot
 catalog requires a process restart. Its current `FWNS` v3 payload contains the
 exact `FWIV` v3 fragment, the optional fixed 340-byte `Z1WM` v2 proof record,
-the optional fixed 64-byte live `Z1OS` v5/v6 overworld/cave/OW66 record, and a
+the optional fixed 64-byte live `Z1OS` v5/v6/v7 overworld/cave/OW66 record, and a
 strict presentation-active byte. `FWNS` v1/v2 inputs migrate as inactive. The
 provider validates into temporary state before restore; its nonserialized
 generation counter lets the trusted plugin deterministically rebuild or clear

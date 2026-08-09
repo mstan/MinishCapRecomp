@@ -75,7 +75,9 @@ std::uint32_t linear_move_handled_return_pc(std::uint32_t lr) {
 
 const GbaForeignObjFocusTransform* ForeignObjFocusDoubleBuffer::next(
     std::int16_t source_feet_x, std::int16_t source_feet_y,
-    std::int16_t destination_feet_x, std::int16_t destination_feet_y) {
+    std::int16_t destination_feet_x, std::int16_t destination_feet_y,
+    std::uint16_t source_obj_tile_base, std::uint16_t source_aux_tile_base,
+    std::uint16_t source_aux_tile_count) {
     GbaForeignObjFocusTransform& out = buffers_[next_index_];
     out = {
         GBA_FOREIGN_OBJ_FOCUS_ABI_VERSION,
@@ -83,9 +85,19 @@ const GbaForeignObjFocusTransform* ForeignObjFocusDoubleBuffer::next(
         source_feet_y,
         destination_feet_x,
         destination_feet_y,
+        // `Entity::x/y` are Link's source feet (pinned player/entity headers).
+        // The larger geometric association preserves Link's composite OAM;
+        // SOURCE_TILE_RANGE filters it to Entity::spriteVramOffset's exact
+        // 16-tile allocation so a nearby smith-house door cannot follow him.
         32,
         40,
-        GBA_FOREIGN_OBJ_FOCUS_PRESERVE_UNFOCUSED,
+        GBA_FOREIGN_OBJ_FOCUS_PRESERVE_UNFOCUSED |
+            GBA_FOREIGN_OBJ_FOCUS_SOURCE_TILE_RANGE |
+            GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_LARGE_NEARBY,
+        source_obj_tile_base,
+        16,
+        source_aux_tile_base,
+        source_aux_tile_count,
     };
     next_index_ ^= 1u;
     return &out;

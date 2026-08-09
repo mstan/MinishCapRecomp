@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 
 namespace minish::foreign_world::zelda1 {
 
@@ -77,6 +78,31 @@ struct OwRoomGeometry {
         return ow_final_tile_is_warp_trigger(final_tile_at(x, y));
     }
 };
+
+// Z_07:GetCollidableTileStill is the single source of truth for the tile
+// observed by Z_05:CheckWarps.  The X coordinate is Link's raw ObjX; the
+// fetched Y is raw ObjY + $0b before the status-bar origin is removed.  Keep
+// this separate from final_tile_at(), whose arguments are cropped renderer
+// pixels, so entrance callers cannot accidentally test the tile eleven
+// pixels above the visible doorway.
+inline std::optional<std::uint8_t> ow_source_still_final_tile(
+    const OwRoomGeometry& geometry, std::int16_t obj_x, std::int16_t obj_y) {
+    const std::int16_t tile_y = static_cast<std::int16_t>(obj_y + 0x0b);
+    if (obj_x < 0 || obj_x >= 256 || tile_y < 0x40 || tile_y >= 0xf0)
+        return std::nullopt;
+    const auto tx = static_cast<std::size_t>(obj_x >> 3);
+    const auto ty = static_cast<std::size_t>((tile_y - 0x40) >> 3);
+    if (tx >= kOwPlayfieldTileWidth || ty >= kOwPlayfieldTileHeight)
+        return std::nullopt;
+    return geometry.final_tiles[ty * kOwPlayfieldTileWidth + tx];
+}
+
+inline bool ow_source_still_is_warp_trigger(const OwRoomGeometry& geometry,
+                                            std::int16_t obj_x,
+                                            std::int16_t obj_y) {
+    const auto tile = ow_source_still_final_tile(geometry, obj_x, obj_y);
+    return tile && ow_final_tile_is_warp_trigger(*tile);
+}
 
 inline bool ow_final_tile_is_walkable(std::uint8_t final_tile) {
     for (const auto exception : kOwExceptionalWalkableFinalTiles) {

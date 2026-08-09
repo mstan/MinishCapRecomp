@@ -141,6 +141,27 @@ bool move_overworld_delta_with_entry_checks(z1::Zelda1OverworldSession* session,
     return session->in_cave();
 }
 
+void stage_source_position(
+    std::array<std::uint8_t, z1::Zelda1OverworldSession::kSerializedSize>* state,
+    std::int16_t x, std::int16_t y) {
+    if (!state) return;
+    (*state)[7] = static_cast<std::uint8_t>(x & 0xff);
+    (*state)[8] = static_cast<std::uint8_t>((static_cast<std::uint16_t>(x) >> 8) & 0xff);
+    (*state)[9] = static_cast<std::uint8_t>(y & 0xff);
+    (*state)[10] = static_cast<std::uint8_t>((static_cast<std::uint16_t>(y) >> 8) & 0xff);
+    (*state)[17] = 0;
+    (*state)[20] = 0;
+}
+
+void stage_source_segment(
+    std::array<std::uint8_t, z1::Zelda1OverworldSession::kSerializedSize>* state,
+    std::int16_t x, std::int16_t y, std::int8_t offset,
+    z1::OverworldWalkDirection direction) {
+    stage_source_position(state, x, y);
+    (*state)[17] = static_cast<std::uint8_t>(offset);
+    (*state)[20] = static_cast<std::uint8_t>(direction);
+}
+
 bool cross_at_matching_opening(z1::Zelda1OverworldSession* session, z1::OwScreenEdge edge) {
     if (!session) return false;
     std::uint8_t neighbor = 0;
@@ -159,6 +180,11 @@ bool cross_at_matching_opening(z1::Zelda1OverworldSession* session, z1::OwScreen
     state[7] = static_cast<std::uint8_t>(x); state[8] = 0;
     state[9] = static_cast<std::uint8_t>(y); state[10] = 0;
     if (!session->restore(state)) return false;
+    // Z_07 checks PlayerScreenEdgeBounds before MoveObject. Starting one
+    // pixel inboard therefore reaches the exact edge first, then crosses on
+    // the next input frame.
+    if (session->move_by(dx, dy) != z1::OverworldSessionMoveResult::kMoved)
+        return false;
     const auto result = session->move_by(dx, dy);
     return result == z1::OverworldSessionMoveResult::kCrossedRoom &&
            session->position().room_id == neighbor;
@@ -175,17 +201,94 @@ bool can_prove_solid_block(z1::Zelda1OverworldSession* session) {
         const unsigned probe_x = x + 0x10, probe_y = y + 0x0b;
         if (probe_x >= 256 || probe_y >= 0xf0) continue;
         const auto tile = tiles[(probe_y - 0x40) / 8 * z1::kOwPlayfieldTileWidth + probe_x / 8];
-        if (z1::ow_final_tile_is_walkable(tile)) continue;
+        const auto left_y = y + 3;
+        if (z1::ow_final_tile_is_walkable(tile) || x < 8 || left_y < 0x40 ||
+            !z1::ow_final_tile_is_walkable(tiles[(left_y - 0x40) / 8 * z1::kOwPlayfieldTileWidth + (x - 8) / 8])) continue;
         auto candidate = saved;
-        candidate[7] = static_cast<std::uint8_t>(x - 1); candidate[8] = 0;
+        candidate[7] = static_cast<std::uint8_t>(x); candidate[8] = 0;
         candidate[9] = static_cast<std::uint8_t>(y); candidate[10] = 0;
         if (!session->restore(candidate) ||
             session->move_by(1, 0) != z1::OverworldSessionMoveResult::kBlocked ||
-            session->source_position().obj_x != static_cast<std::int16_t>(x - 1) ||
+            session->source_position().obj_x != static_cast<std::int16_t>(x) ||
+            // Reversing at the blocked aligned point is legal.
+            session->move_by(-1, 0) != z1::OverworldSessionMoveResult::kMoved ||
             !session->restore(saved)) return false;
         return true;
     }
     return false;
+}
+
+bool can_prove_vertical_pair_prefers_visible_blocker(
+    z1::Zelda1OverworldSession* session) {
+    if (!session) return false;
+    const auto saved = session->serialize();
+    const auto& tiles = session->geometry().final_tiles;
+    // Z_07 down probe: candidate ObjY + $0b + $08, then the next tile
+    // column. Find an actual source pair whose first tile is passable and
+    // whose adjacent visible tile is blocking; the higher final-tile value
+    // must win or Link walks through that boundary.
+    for (unsigned y = 0x45; y < 0xc5; y += 8) for (unsigned x = 0; x < 0xe8; x += 8) {
+        const unsigned probe_y = y + 0x13;
+        if (probe_y >= 0xf0 || x + 8 >= 256) continue;
+        const auto first = tiles[(probe_y - 0x40) / 8 * z1::kOwPlayfieldTileWidth + x / 8];
+        const auto adjacent = tiles[(probe_y - 0x40) / 8 * z1::kOwPlayfieldTileWidth + x / 8 + 1];
+        if (!z1::ow_final_tile_is_walkable(first) || z1::ow_final_tile_is_walkable(adjacent) ||
+            adjacent <= first) continue;
+        auto candidate = saved;
+        candidate[7] = static_cast<std::uint8_t>(x); candidate[8] = 0;
+        candidate[9] = static_cast<std::uint8_t>(y); candidate[10] = 0;
+        if (!session->restore(candidate) ||
+            session->move_by(0, 1) != z1::OverworldSessionMoveResult::kBlocked ||
+            session->source_position().obj_y != static_cast<std::int16_t>(y) ||
+            !session->restore(saved)) return false;
+        return true;
+    }
+    return false;
+}
+
+bool can_prove_midcell_turn_lock(z1::Zelda1OverworldSession* session) {
+    if (!session) return false;
+    const auto saved = session->serialize();
+    const auto& tiles = session->geometry().final_tiles;
+    bool staged = false;
+    for (unsigned y = 0x45; y < 0xc5 && !staged; y += 8) for (unsigned x = 0x10; x < 0xd8; x += 8) {
+        const unsigned probe_x = x + 0x10, probe_y = y + 0x0b;
+        const unsigned down_y = y + 0x13;
+        if (probe_y >= 0xf0 || down_y >= 0xf0 || x + 8 >= 256 ||
+            !z1::ow_final_tile_is_walkable(
+                tiles[(probe_y - 0x40) / 8 * z1::kOwPlayfieldTileWidth + probe_x / 8]) ||
+            !z1::ow_final_tile_is_walkable(std::max(
+                tiles[(down_y - 0x40) / 8 * z1::kOwPlayfieldTileWidth + x / 8],
+                tiles[(down_y - 0x40) / 8 * z1::kOwPlayfieldTileWidth + x / 8 + 1]))) continue;
+        auto candidate = saved;
+        candidate[7] = static_cast<std::uint8_t>(x); candidate[8] = 0;
+        candidate[9] = static_cast<std::uint8_t>(y); candidate[10] = 0;
+        if (session->restore(candidate)) staged = true;
+    }
+    if (!staged) return false;
+    const auto start = session->source_position();
+    // A release preserves phase. Z_05 allows an opposite direction to walk
+    // back to the preceding point; an early perpendicular request performs
+    // that same reversal before it can turn on the new axis.
+    if (session->move_by(1, 0) != z1::OverworldSessionMoveResult::kMoved ||
+        session->move_by(0, 0) != z1::OverworldSessionMoveResult::kMoved ||
+        session->source_position().obj_x != start.obj_x + 1 ||
+        session->source_position().obj_y != start.obj_y)
+        return false;
+    const auto mid_segment = session->serialize();
+    if (!session->restore(mid_segment) ||
+        session->move_by(-1, 0) != z1::OverworldSessionMoveResult::kMoved ||
+        session->source_position().obj_x != start.obj_x)
+        return false;
+    if (session->move_by(1, 0) != z1::OverworldSessionMoveResult::kMoved ||
+        session->move_by(0, 1) != z1::OverworldSessionMoveResult::kMoved ||
+        session->source_position().obj_x != start.obj_x ||
+        session->source_position().obj_y != start.obj_y ||
+        session->move_by(0, 1) != z1::OverworldSessionMoveResult::kMoved ||
+        session->source_position().obj_x != start.obj_x ||
+        session->source_position().obj_y != start.obj_y + 1 ||
+        !session->restore(saved)) return false;
+    return true;
 }
 
 int test_synthetic_rejections() {
@@ -280,31 +383,54 @@ int test_actual_ines_path(const char* path) {
         return fail("OW session did not atomically initialize from the live loader: " + error);
     const auto initial_state = session.serialize();
     if (!z1::Zelda1OverworldSession::validate_serialized(initial_state) ||
-        !can_prove_solid_block(&session) || session.position().room_id != 0x77 ||
-        session.framebuffer() != stable_frame)
-        return fail("OW session did not reject a solid final-tile footprint atomically");
+        !can_prove_solid_block(&session) ||
+        !can_prove_vertical_pair_prefers_visible_blocker(&session) ||
+        session.position().room_id != 0x77 || session.framebuffer() != stable_frame)
+        return fail("OW session did not match source visible final-tile collision atomically");
+    if (!session.restore(initial_state, &error) || !can_prove_midcell_turn_lock(&session))
+        return fail("OW session did not retain source ObjGridOffset/ObjDir through a mid-cell turn");
+    // Cover several independently rendered First Quest rooms. Each check
+    // stages an actual source final-tile boundary and proves a one-pixel host
+    // movement cannot cross it, so collision cannot drift from the map used
+    // to draw those rooms.
+    for (const std::uint8_t room : std::array<std::uint8_t, 3>{{0x67, 0x66, 0x76}}) {
+        z1::Zelda1OverworldSession visual_collision;
+        if (!visual_collision.load_hash_validated_ines(path, room, &error) ||
+            !can_prove_solid_block(&visual_collision))
+            return fail("rendered source terrain and collision disagreed in OW room $" +
+                        std::to_string(room));
+    }
     // Z_05:HandleWarpOW accepts the $24 mouth only when the source hotspot is
-    // grid-aligned. The virtual target (56,21) converts to ObjX=$40,
-    // ObjY=$5D: InitMode2's source cave-walk-out start coordinate. Starting
-    // one pixel west and supplying a two-pixel host delta must enter at the
-    // first probe rather than stepping over the exact hotspot.
+    // grid-aligned. GetCollidableTileStill samples ObjY+$0B, so the visible
+    // OW77 mouth is aligned Obj=($40,$4D), crop=(56,5), not the later
+    // InitMode2 walk-out coordinate ($40,$5D). Start one pixel away and
+    // supply a two-pixel host delta to prove no fixed-speed input skips it.
     struct PortalCrossingProbe { std::uint8_t x, y; std::int16_t dx, dy; };
     constexpr std::array<PortalCrossingProbe, 4> kPortalCrossingProbes{{
-        {54, 21, 2, 0}, {58, 21, -2, 0}, {56, 19, 0, 2}, {56, 23, 0, -2},
+        {54, 5, 2, 0}, {58, 5, -2, 0}, {56, 3, 0, 2}, {56, 7, 0, -2},
     }};
     bool crossed_cave_hotspot = false;
     for (const auto probe : kPortalCrossingProbes) {
-        if (!session.restore(initial_state, &error))
+        auto crossing_state = initial_state;
+        const auto x = static_cast<std::int16_t>(probe.x + 8);
+        const auto y = static_cast<std::int16_t>(probe.y + 72);
+        const auto direction = probe.dx > 0 ? z1::OverworldWalkDirection::kRight :
+            probe.dx < 0 ? z1::OverworldWalkDirection::kLeft :
+            probe.dy > 0 ? z1::OverworldWalkDirection::kDown : z1::OverworldWalkDirection::kUp;
+        stage_source_segment(&crossing_state, x, y,
+                             static_cast<std::int8_t>((probe.dx < 0 || probe.dy < 0) ? -6 : 6),
+                             direction);
+        if (!session.restore(crossing_state, &error))
             return fail("could not reset OW77 before two-pixel portal probe: " + error);
-        if (move_to(&session, probe.x, probe.y) &&
-            move_overworld_delta_with_entry_checks(&session, probe.dx, probe.dy) &&
+        if (move_overworld_delta_with_entry_checks(&session, probe.dx, probe.dy) &&
             session.in_cave()) {
             crossed_cave_hotspot = true;
             break;
         }
     }
-    if (!crossed_cave_hotspot || !session.restore(initial_state, &error) ||
-        !move_to(&session, 56, 21) ||
+    auto cave_hotspot = initial_state;
+    stage_source_position(&cave_hotspot, 0x40, 0x4d);
+    if (!crossed_cave_hotspot || !session.restore(cave_hotspot, &error) ||
         session.try_enter_cave() != z1::OverworldSessionCaveResult::kEntered ||
         !session.in_cave() || session.area() != z1::OverworldSessionArea::kCave ||
         session.cave_index() != 16 ||
@@ -465,7 +591,16 @@ int test_actual_ines_path(const char* path) {
         session.position().x != 56 || session.position().y != 21 ||
         session.framebuffer() != stable_frame)
         return fail("OW77 source cave return did not preserve the verified terrain frame: " + error);
-    if (session.try_enter_cave() != z1::OverworldSessionCaveResult::kEntered ||
+    // InitMode2 returns Link to ($40,$5D), then the original game walks him
+    // away from the mouth. That walk-out coordinate is not itself a warp
+    // point: CheckWarps samples its tile at ObjY+$0B. Re-enter only after
+    // staging the independently verified ($40,$4D) mouth hotspot.
+    if (session.try_enter_cave() != z1::OverworldSessionCaveResult::kNoEntrance)
+        return fail("start-cave walk-out coordinate spuriously re-entered the cave");
+    auto reentry_hotspot = session.serialize();
+    stage_source_position(&reentry_hotspot, 0x40, 0x4d);
+    if (!session.restore(reentry_hotspot, &error) ||
+        session.try_enter_cave() != z1::OverworldSessionCaveResult::kEntered ||
         session.framebuffer() != cave_after_sword ||
         !same_rectangle(session.framebuffer(), cave_before_sword, 0x48 - 8, 0x80 - 72, 16, 8) ||
         !same_rectangle(session.framebuffer(), cave_before_sword, 0xa8 - 8, 0x80 - 72, 16, 8) ||
@@ -555,6 +690,10 @@ int test_actual_ines_path(const char* path) {
     corrupt_session[12] = 0x11;
     if (session.restore(corrupt_session, &error) || session.serialize() != stable_session)
         return fail("OW session accepted a cave index that disagrees with source room facts");
+    corrupt_session = stable_session;
+    corrupt_session[20] = static_cast<std::uint8_t>(z1::OverworldWalkDirection::kRight);
+    if (session.restore(corrupt_session, &error) || session.serialize() != stable_session)
+        return fail("OW session accepted a direction without an in-flight grid offset");
     std::cout << "Actual PRG0 iNES live OW77 frame passed\n";
     return 0;
 }

@@ -322,7 +322,7 @@ specific hot spot; this is not a room-number-only entrance.
 
 ### Source-space overworld movement
 
-`Zelda1OverworldSession` v6 retains signed source `ObjX/ObjY` as its
+`Zelda1OverworldSession` v7 retains signed source `ObjX/ObjY` as its
 authoritative position and derives crop presentation as `(ObjX-8, ObjY-72)`.
 That permits the real `PlayerScreenEdgeBounds` collar: north `$3D` (crop
 `-11`), south `$DD` (149), west `$00` (-8), and east `$F0` (232). Directional
@@ -335,15 +335,23 @@ samples those exact probes only at documented `ObjGridOffset==0` grid points
 `($80,$9D)` / crop `(120,85)`, so this policy cannot bypass source solids
 from the former unaligned presentation-only start.
 
+`Z_05:Link_ModifyDirOnGridLine` is retained as well: release leaves an
+in-flight segment unchanged; opposite input walks it back to the preceding
+grid point; and an early perpendicular request reverses to that point before
+the requested axis can begin. This prevents the host from entering a
+two-axis, collision-unsampled state. v7 serializes the signed
+`ObjGridOffset` and active `ObjDir` representation; strict v5/v6 migration
+creates the canonical settled (`0`/none) v7 phase.
+
 At an exact edge, `CheckScreenEdge` uses the source room lattice without an
 edge-opening search or room-specific bridge rule. Mode 6/7 lands at the
-opposite raw edge while preserving the perpendicular coordinate. The v6
+opposite raw edge while preserving the perpendicular coordinate. The v7
 record remains 64 bytes, migrates strict v5 crop coordinates via `(+8,+72)`,
 and preserves an initialized OW66 actor record across non-OW66 overworld
-screens so a defeated actor does not respawn on return. Actual-ROM route
-validation drives `OW77→67→57→47→37` and then the exact Level-1 hotspot with
-the deterministic compressed D-pad trace `U231 L1 U24 L7 U8 L1 U152 L7 U8 L1
-U152 R1 U8 L1 U73 R1`.
+screens so a defeated actor does not respawn on return. The actual-ROM route
+validator explores and replays only these source grid/edge states, then emits
+a compressed D-pad trace on success; it does not treat a room-number chain as
+proof that a visible terrain route exists.
 
 The adapter publishes only a stable framebuffer pointer, room ID, and a
 host presentation coordinate. Its initial X uses source `$80` through the

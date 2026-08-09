@@ -44,6 +44,15 @@ constexpr std::uint32_t kPriorityTimer = 0x03003DC8;
 // The high Q16.16 half is an immutable source feet anchor for the PPU-only
 // transform; it is never written by this plugin.
 constexpr std::uint32_t kPlayerFeetX = 0x0300118E, kPlayerFeetY = 0x03001192;
+// Source: Entity::spriteVramOffset at +0x60 (include/entity.h), allocated
+// in 16-tile OBJ units by src/vram.c. This read-only source fact identifies
+// Link's composite OAM allocation without moving guest OAM or room props.
+constexpr std::uint32_t kPlayerSpriteVramOffset = 0x030011C0;
+// Read-only OAM capture with `Entity::spriteSettings.shadow` enabled records
+// its 16x8 player shadow as OBJ tile 0x001, immediately after the player body
+// entries.  Carry that bounded auxiliary allocation with the player rather
+// than leaving a frozen teal oval over a foreign room.
+constexpr std::uint16_t kPlayerShadowObjTile = 0x001;
 constexpr std::uint32_t kRoomScrollX = 0x03000BFA, kRoomScrollY = 0x03000BFC;
 constexpr std::uint32_t kLinearMoveDirectionOld = 0x080027EA;
 // Source: zeldaret/tmc linker.ld, include/player.h, and playerUtils.c.
@@ -97,7 +106,9 @@ bool publish_current_foreign_video() {
         level1_active ? level1.player.x :
             (cave_position ? cave_position->x : static_cast<std::int16_t>(position.x)),
         level1_active ? level1.player.y :
-            (cave_position ? cave_position->y : static_cast<std::int16_t>(position.y)));
+            (cave_position ? cave_position->y : static_cast<std::int16_t>(position.y)),
+        bus_read_u16(kPlayerSpriteVramOffset), kPlayerShadowObjTile,
+        (bus_read_u8(kPlayerDraw) & 0x30u) != 0 ? 1u : 0u);
     if (gba_mod_publish_foreign_obj_focus(kZelda1ForeignWorldPluginId, focus) == 0) {
         gba_mod_clear_foreign_obj_focus();
         gba_mod_clear_foreign_background();
@@ -261,6 +272,22 @@ bool observe_cave_interaction(std::uint16_t keyinput) {
     return true;
 }
 
+// CheckWarps is a per-update source routine, not a side effect reserved for
+// a successful movement probe.  In particular, a player who releases the
+// D-pad on a source-aligned $24/$88/$70..$73 tile must still be able to take
+// the normal cave/level transition on the next update.  Keep this seam
+// host-only: both callees consume the decoded Zelda state and only exchange
+// immutable presentation state with the renderer.
+bool observe_overworld_entrance() {
+    if (g_overworld_session.in_cave() || g_level1_adapter.active())
+        return false;
+    if (g_overworld_session.try_enter_cave() ==
+        OverworldSessionCaveResult::kEntered)
+        return true;
+    return g_level1_adapter.try_enter_from_overworld(g_overworld_session) ==
+        Level1LiveResult::kEntered;
+}
+
 // Performs exactly one host-side Zelda movement pixel.  This is deliberately
 // driven from the source frame observer, not a Minish collision callback:
 // native house walls can prevent LinearMoveDirectionOLD from running even
@@ -298,10 +325,7 @@ bool move_foreign_one_pixel(std::int16_t dx, std::int16_t dy) {
     if (movement != OverworldSessionMoveResult::kMoved) return false;
     // Both entrances are source-coordinate hotspots. This probe is made
     // after every virtual pixel, including either half of a diagonal.
-    if (g_overworld_session.try_enter_cave() == OverworldSessionCaveResult::kEntered)
-        return false;
-    if (g_level1_adapter.try_enter_from_overworld(g_overworld_session) ==
-        Level1LiveResult::kEntered)
+    if (observe_overworld_entrance())
         return false;
     return true;
 }
@@ -328,6 +352,12 @@ void tick_foreign_locomotion_once(std::uint16_t keyinput) {
         (void)move_foreign_one_pixel(0, dy);
     else if (dx == 0)
         (void)move_foreign_one_pixel(0, dy);
+    // Zelda's CheckWarps runs at the end of every ordinary play update.  The
+    // per-pixel path above handles a moving crossing; this second observation
+    // supplies the source's stationary case and also remains available after
+    // a blocked source probe.  It is deliberately after movement so a D-pad
+    // press can leave a warp tile before it is considered, as in the source.
+    (void)observe_overworld_entrance();
     if (g_qa_room.active() && g_qa_video_active && g_foreign_survival_safe &&
         !observe_cave_interaction(keyinput))
         return;

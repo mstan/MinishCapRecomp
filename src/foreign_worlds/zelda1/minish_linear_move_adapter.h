@@ -43,14 +43,18 @@ struct LinearMoveAccumulator {
 // address. The caller intentionally leaves R0..R14 and CPSR bit-identical.
 [[nodiscard]] std::uint32_t linear_move_handled_return_pc(std::uint32_t lr);
 
-// Immutable v1 PPU descriptor production. The two buffers are intentionally
+// Immutable v3 PPU descriptor production. The two buffers are intentionally
 // separate: fully write the inactive descriptor, then publish its address.
 // This makes a prior PPU-visible descriptor stable through the next update.
+// The source-mapped player feet are associated with Entity::spriteVramOffset's
+// bounded OAM tile allocation, so nearby room props remain untouched.
 class ForeignObjFocusDoubleBuffer {
 public:
     [[nodiscard]] const GbaForeignObjFocusTransform* next(
         std::int16_t source_feet_x, std::int16_t source_feet_y,
-        std::int16_t destination_feet_x, std::int16_t destination_feet_y);
+        std::int16_t destination_feet_x, std::int16_t destination_feet_y,
+        std::uint16_t source_obj_tile_base, std::uint16_t source_aux_tile_base,
+        std::uint16_t source_aux_tile_count);
     void reset() { next_index_ = 0; buffers_ = {}; }
 
 private:

@@ -33,6 +33,7 @@ std::uint32_t g_frame = 0;
 std::uint8_t g_active_item_behavior = 0, g_active_item_priority = 0;
 std::uint8_t g_active_item_animation = 0, g_player_sword_state = 0;
 std::uint8_t g_player_attack_status = 0, g_player_animation_state = 0;
+std::uint16_t g_player_sprite_vram_offset = 0x160;
 unsigned g_bus_write_count = 0;
 
 int fail(const std::string& message) {
@@ -52,9 +53,10 @@ struct PortalCrossingProbe {
     std::uint16_t key;
 };
 
-// Z1OS v6 persists signed raw Zelda ObjX/ObjY at [7..10].  These test-only
-// fixture helpers preserve the prior crop-space probes through the renderer's
-// fixed (+8,+72) inverse; they do not add a production staging API.
+// Z1OS v7 persists signed raw Zelda ObjX/ObjY at [7..10] plus the source
+// ObjGridOffset/ObjDir segment at [17]/[20]. These test-only fixture helpers
+// preserve crop-space probes through the renderer's fixed (+8,+72) inverse;
+// they do not add a production staging API.
 void stage_source_position(
     std::array<std::uint8_t, z1::Zelda1OverworldSession::kSerializedSize>* state,
     std::int16_t x, std::int16_t y) {
@@ -63,6 +65,17 @@ void stage_source_position(
     (*state)[8] = static_cast<std::uint8_t>((static_cast<std::uint16_t>(x) >> 8) & 0xff);
     (*state)[9] = static_cast<std::uint8_t>(y & 0xff);
     (*state)[10] = static_cast<std::uint8_t>((static_cast<std::uint16_t>(y) >> 8) & 0xff);
+    (*state)[17] = 0;
+    (*state)[20] = 0;
+}
+
+void stage_source_segment(
+    std::array<std::uint8_t, z1::Zelda1OverworldSession::kSerializedSize>* state,
+    std::int16_t x, std::int16_t y, std::int8_t offset,
+    z1::OverworldWalkDirection direction) {
+    stage_source_position(state, x, y);
+    (*state)[17] = static_cast<std::uint8_t>(offset);
+    (*state)[20] = static_cast<std::uint8_t>(direction);
 }
 
 void stage_crop_position(
@@ -82,14 +95,24 @@ bool source_cave_crossing_start(
         return false;
     const auto initial = session.serialize();
     constexpr std::array<PortalCrossingProbe, 4> kProbes{{
-        {54, 21, 2, 0, z1::kGbaKeyRight},
-        {58, 21, -2, 0, z1::kGbaKeyLeft},
-        {56, 19, 0, 2, z1::kGbaKeyDown},
-        {56, 23, 0, -2, z1::kGbaKeyUp},
+        {54, 5, 2, 0, z1::kGbaKeyRight},
+        {58, 5, -2, 0, z1::kGbaKeyLeft},
+        {56, 3, 0, 2, z1::kGbaKeyDown},
+        {56, 7, 0, -2, z1::kGbaKeyUp},
     }};
     for (const auto probe : kProbes) {
         auto candidate = initial;
-        stage_crop_position(&candidate, probe.x, probe.y);
+        const auto x = static_cast<std::int16_t>(probe.x + 8);
+        const auto y = static_cast<std::int16_t>(probe.y + 72);
+        const auto direction = probe.dx > 0 ? z1::OverworldWalkDirection::kRight :
+            probe.dx < 0 ? z1::OverworldWalkDirection::kLeft :
+            probe.dy > 0 ? z1::OverworldWalkDirection::kDown :
+                            z1::OverworldWalkDirection::kUp;
+        // Real Walker state reaching an aligned mouth from two source pixels
+        // away: phase +/-6 advances to +/-7 then grid-zero at the doorway.
+        stage_source_segment(&candidate, x, y,
+                             static_cast<std::int8_t>((probe.dx < 0 || probe.dy < 0) ? -6 : 6),
+                             direction);
         if (!session.restore(candidate, &error)) continue;
         const unsigned count = static_cast<unsigned>(probe.dx != 0
             ? (probe.dx < 0 ? -probe.dx : probe.dx)
@@ -113,6 +136,28 @@ bool source_cave_crossing_start(
         }
     }
     return false;
+}
+
+// These are the actual CheckWarps object coordinates, rather than the
+// renderer tile's top-left coordinate.  GetCollidableTileStill samples the
+// final map at ObjY+$0b, so OW77's $24 mouth is Obj=($40,$4d).  Keep the
+// fixture ROM-backed: any decoder/layout change must still prove that exact
+// source point produces the normal cave transition.
+bool source_cave_stationary_hotspot(
+    const char* path,
+    std::array<std::uint8_t, z1::Zelda1OverworldSession::kSerializedSize>* state) {
+    if (!path || !state) return false;
+    z1::Zelda1OverworldSession session;
+    std::string error;
+    if (!session.load_hash_validated_ines(path, z1::Zelda1OverworldSession::kInitialRoom,
+                                          &error)) return false;
+    auto candidate = session.serialize();
+    stage_source_position(&candidate, 0x40, 0x4d);
+    if (!session.restore(candidate, &error) ||
+        session.try_enter_cave() != z1::OverworldSessionCaveResult::kEntered)
+        return false;
+    *state = candidate;
+    return true;
 }
 
 bool source_level1_crossing_start(
@@ -144,8 +189,14 @@ bool source_level1_crossing_start(
                 const int px = static_cast<int>(x) - neighbor.dx;
                 const int py = static_cast<int>(y) - neighbor.dy;
                 if (px < 0 || py < 0) continue;
-                stage_crop_position(&candidate, static_cast<std::int16_t>(px),
-                                    static_cast<std::int16_t>(py));
+                const auto direction = neighbor.dx > 0 ? z1::OverworldWalkDirection::kRight :
+                    neighbor.dx < 0 ? z1::OverworldWalkDirection::kLeft :
+                    neighbor.dy > 0 ? z1::OverworldWalkDirection::kDown :
+                                      z1::OverworldWalkDirection::kUp;
+                stage_source_segment(&candidate, static_cast<std::int16_t>(px + 8),
+                                     static_cast<std::int16_t>(py + 72),
+                                     static_cast<std::int8_t>((neighbor.dx < 0 || neighbor.dy < 0) ? -7 : 7),
+                                     direction);
                 if (!session.restore(candidate, &error) ||
                     session.move_by(neighbor.dx, neighbor.dy) !=
                         z1::OverworldSessionMoveResult::kMoved)
@@ -161,6 +212,26 @@ bool source_level1_crossing_start(
         }
     }
     return false;
+}
+
+// OW37's Level 1 entrance is likewise an aligned object point whose visible
+// $24 final tile is read at ObjY+$0b: Obj=($70,$7d).  Do not derive this from
+// an input trace; ask the real verified First Quest decoder and live adapter.
+bool source_level1_stationary_hotspot(
+    const char* path,
+    std::array<std::uint8_t, z1::Zelda1OverworldSession::kSerializedSize>* state) {
+    if (!path || !state) return false;
+    z1::Zelda1OverworldSession session;
+    std::string error;
+    if (!session.load_hash_validated_ines(path, 0x37, &error)) return false;
+    auto candidate = session.serialize();
+    stage_source_position(&candidate, 0x70, 0x7d);
+    if (!session.restore(candidate, &error)) return false;
+    z1::Zelda1Level1LiveAdapter adapter;
+    if (adapter.try_enter_from_overworld(session) != z1::Level1LiveResult::kEntered)
+        return false;
+    *state = candidate;
+    return true;
 }
 
 }  // namespace
@@ -225,6 +296,7 @@ extern "C" std::uint8_t bus_read_u8(std::uint32_t address) {
 extern "C" std::uint16_t bus_read_u16(std::uint32_t address) {
     if (address == 0x04000130) return g_keyinput;
     if (address == 0x03003DC8) return g_priority_timer;
+    if (address == 0x030011C0) return g_player_sprite_vram_offset;
     return 0;  // The saved Mode 3 VRAM snapshot is irrelevant to this bridge test.
 }
 extern "C" std::uint32_t bus_read_u32(std::uint32_t address) {
@@ -380,6 +452,32 @@ int main(int argc, char** argv) {
     if (cave_after_input.size() != z1::Zelda1OverworldSession::kSerializedSize ||
         cave_after_input[11] != static_cast<std::uint8_t>(z1::OverworldSessionArea::kCave))
         return fail("KEYINPUT-only exact OW77 cave crossing did not enter the foreign cave");
+    // CheckWarps also runs while Link is standing still. The old adapter only
+    // attempted entrances after a successful virtual movement probe, so a
+    // human releasing the D-pad on a source doorway could be stranded. Feed
+    // the real OW77 mouth through the plugin, release every direction, and
+    // require the next foreign update to enter without any guest write.
+    std::array<std::uint8_t, z1::Zelda1OverworldSession::kSerializedSize> cave_stationary{};
+    if (!source_cave_stationary_hotspot(argv[1], &cave_stationary))
+        return fail("could not verify the actual-ROM OW77 stationary cave hotspot");
+    z1::reset_smith_yard_readiness_plugin();
+    if (!minish::foreign_world::foreign_world_native_state()
+             .set_zelda1_overworld_session_blob(cave_stationary, &persistence_error))
+        return fail("could not stage OW77 stationary cave hotspot: " + persistence_error);
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
+    z1::activate_smith_yard_readiness_plugin();
+    for (unsigned i = 0; i < z1::SmithYardQaRoom::kActivationUpdates; ++i) {
+        ++g_frame;
+        (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    }
+    g_keyinput = 0x03ff;
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    const auto& cave_after_stationary = minish::foreign_world::foreign_world_native_state()
+        .zelda1_overworld_session_blob();
+    if (cave_after_stationary.size() != z1::Zelda1OverworldSession::kSerializedSize ||
+        cave_after_stationary[11] != static_cast<std::uint8_t>(z1::OverworldSessionArea::kCave))
+        return fail("stationary OW77 mouth did not enter through the plugin observer");
     // The same per-pixel observer seam must activate decoded OW37 Level 1
     // entrances. A changed published framebuffer pointer is the plugin's
     // public proof that it switched from OW terrain to the Level-1 session.
@@ -403,6 +501,28 @@ int main(int argc, char** argv) {
     (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
     if (!g_foreign_background || g_foreign_background == overworld_pixels_before_level)
         return fail("KEYINPUT-only exact OW37 seam did not publish the Level-1 session");
+    // Mirror the cave proof for the exact OW37 ($70,$7d) source entrance:
+    // a released D-pad still takes the Level 1 doorway during CheckWarps.
+    std::array<std::uint8_t, z1::Zelda1OverworldSession::kSerializedSize> level_stationary{};
+    if (!source_level1_stationary_hotspot(argv[1], &level_stationary))
+        return fail("could not verify the actual-ROM OW37 stationary Level-1 hotspot");
+    z1::reset_smith_yard_readiness_plugin();
+    if (!minish::foreign_world::foreign_world_native_state()
+             .set_zelda1_overworld_session_blob(level_stationary, &persistence_error))
+        return fail("could not stage OW37 stationary Level-1 hotspot: " + persistence_error);
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
+    z1::activate_smith_yard_readiness_plugin();
+    for (unsigned i = 0; i < z1::SmithYardQaRoom::kActivationUpdates; ++i) {
+        ++g_frame;
+        (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    }
+    const auto* overworld_pixels_before_stationary_level = g_foreign_background;
+    g_keyinput = 0x03ff;
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (!g_foreign_background ||
+        g_foreign_background == overworld_pixels_before_stationary_level)
+        return fail("stationary OW37 doorway did not publish the Level-1 session");
     g_keyinput = 0x03ff;
     ArmCpuState movement_cpu{};
     movement_cpu.R[0] = z1::kMinishPlayerEntityAddress;

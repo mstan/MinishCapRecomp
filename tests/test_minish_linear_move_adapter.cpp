@@ -48,14 +48,20 @@ int main() {
             return (std::cerr << "FAIL: handled hook modified a non-PC register\n", 1);
 
     z1::ForeignObjFocusDoubleBuffer focus;
-    const auto* first = focus.next(90, 70, 120, 80);
+    const auto* first = focus.next(90, 70, 120, 80, 0x160, 1, 1);
     const auto first_copy = *first;
-    const auto* second = focus.next(91, 71, 121, 81);
+    const auto* second = focus.next(91, 71, 121, 81, 0x170, 0, 0);
     if (!first || !second || first == second ||
         std::memcmp(first, &first_copy, sizeof(first_copy)) != 0 ||
         first->abi_version != GBA_FOREIGN_OBJ_FOCUS_ABI_VERSION ||
         first->source_radius_x != 32 || first->source_radius_y != 40 ||
-        first->flags != GBA_FOREIGN_OBJ_FOCUS_PRESERVE_UNFOCUSED)
+        first->flags != (GBA_FOREIGN_OBJ_FOCUS_PRESERVE_UNFOCUSED |
+                         GBA_FOREIGN_OBJ_FOCUS_SOURCE_TILE_RANGE |
+                         GBA_FOREIGN_OBJ_FOCUS_SUPPRESS_LARGE_NEARBY) ||
+        first->source_obj_tile_base != 0x160 ||
+        first->source_obj_tile_count != 16 ||
+        first->source_aux_obj_tile_base != 1 ||
+        first->source_aux_obj_tile_count != 1)
         return (std::cerr << "FAIL: focus descriptor double-buffer is not stable\n", 1);
     z1::ActiveLowButtonEdge edge;
     if (edge.observe(0x03ff, 1) || !edge.observe(0x03fe, 1) ||

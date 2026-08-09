@@ -276,25 +276,25 @@ bool FirstQuestData::overworld_room(std::uint8_t x, std::uint8_t y,
     }
     const std::uint8_t room_id = static_cast<std::uint8_t>(y * kOverworldWidth + x);
     const RoomAttributeBytes attributes = attributes_for(block.bytes, room_id);
-    // Source-faithful: LayoutRoomOW (Z_05.asm) shifts the complete byte four
-    // times and adds it to RoomLayoutsOWAddr.  GetUniqueRoomId masks $3F,
-    // but that is a distinct helper; using it here incorrectly selects $32
-    // for OW $77 instead of its actual layout record $72.
-    const std::uint8_t layout_reference = attributes.attr_d;
+    // Z_05:LayoutRoomOW performs two ASLs before its first ROL into the
+    // high-byte accumulator. That intentionally drops AttrD bit 7; the
+    // following two ROLs retain bits 6..4, so the resulting 16-byte layout
+    // offset is `(AttrD & $7f) * $10`.  Do not use GetUniqueRoomId's `$3f`
+    // mask (it would turn OW77 `$72` into `$32`), but also do not retain the
+    // high object-list bit: it made OW58 `$d3` and OW38 `$b7` decode from
+    // unrelated underworld data and produced false terrain blockers.
+    const std::uint8_t layout_reference = attributes.attr_d & 0x7f;
     constexpr std::size_t kColumnsPerReferencedOverworldLayout = 16;
     const std::size_t layout_offset = layout_reference * kColumnsPerReferencedOverworldLayout;
-    // LayoutRoomOW performs no data-span check after this address add. Some
-    // valid OW references continue into following source-mapped PRG data;
-    // validate that exact computed source address, rather than guessing a
-    // six-bit mask or rejecting the original routine's address calculation.
-    const std::size_t layout_prg_offset = layouts.prg_offset + layout_offset;
-    if (layout_prg_offset > prg_.bytes().size() ||
-        kColumnsPerReferencedOverworldLayout > prg_.bytes().size() - layout_prg_offset) {
-        set_error(error, "overworld layout reference exceeds verified PRG");
+    // The source range has 121 16-byte OW layouts; the highest legal
+    // source-derived index is `$78`.
+    if (layout_offset > layouts.bytes.size() ||
+        kColumnsPerReferencedOverworldLayout > layouts.bytes.size() - layout_offset) {
+        set_error(error, "overworld layout reference exceeds RoomLayoutsOW span");
         return false;
     }
     *output = {x, y, room_id, attributes, layout_reference,
-               prg_.bytes().subspan(layout_prg_offset, kColumnsPerReferencedOverworldLayout)};
+               layouts.bytes.subspan(layout_offset, kColumnsPerReferencedOverworldLayout)};
     return true;
 }
 

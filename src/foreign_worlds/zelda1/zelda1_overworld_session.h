@@ -28,6 +28,13 @@ enum class OverworldSessionMoveResult : std::uint8_t {
   kNotLoaded,
   kInvalid,
 };
+enum class OverworldWalkDirection : std::uint8_t {
+  kNone = 0,
+  kUp = 1,
+  kDown = 2,
+  kLeft = 3,
+  kRight = 4,
+};
 
 // The session currently owns only the overworld terrain framebuffer.  Cave
 // mode is nevertheless explicit so an adapter cannot continue moving the OW
@@ -98,8 +105,9 @@ public:
   // collision is hotspot/tile based rather than an 8x8 sprite rectangle.
   inline static constexpr std::uint8_t kLinkFootprintWidth = 1;
   inline static constexpr std::uint8_t kLinkFootprintHeight = 1;
-  // v6 stores signed Zelda ObjX/ObjY rather than lossy crop coordinates.
-  // v5 records are migrated on restore. Bytes 20..31 are canonical padding;
+  // v7 additionally persists the source-style in-progress eight-pixel walk
+  // segment (ObjGridOffset/ObjDir). v5/v6 records migrate on restore. Bytes
+  // 21..31 are canonical padding;
   // combat remains at byte 32 to keep FWNS's fixed provider footprint.
   inline static constexpr std::size_t kSerializedSize = 64;
 
@@ -145,6 +153,8 @@ public:
     area_ = OverworldSessionArea::kOverworld;
     cave_index_ = 0;
     start_sword_acquired_ = false;
+    grid_offset_ = 0;
+    walk_direction_ = OverworldWalkDirection::kNone;
     octoroks_ = octorok_candidate;
     loaded_ = true;
     return true;
@@ -159,6 +169,7 @@ public:
   [[nodiscard]] OverworldSourcePosition source_position() const {
     return source_position_;
   }
+  [[nodiscard]] bool at_source_grid_point() const { return grid_offset_ == 0; }
   [[nodiscard]] OverworldSessionArea area() const { return area_; }
   [[nodiscard]] bool in_cave() const {
     return area_ == OverworldSessionArea::kCave;
@@ -226,10 +237,14 @@ public:
         dy == std::numeric_limits<std::int16_t>::min())
       return OverworldSessionMoveResult::kInvalid;
     OverworldSessionMoveResult result = OverworldSessionMoveResult::kMoved;
-    if (!move_axis(dx, true, &result))
+    // Z_07:GetOppositeDir reduces simultaneous input to one cardinal
+    // ObjInputDir. Preserve the historical host X priority rather than
+    // attempting two perpendicular source moves in one update.
+    if (dx != 0) {
+      (void)move_axis(dx, true, &result);
       return result;
-    if (!move_axis(dy, false, &result))
-      return result;
+    }
+    (void)move_axis(dy, false, &result);
     return result;
   }
 
@@ -239,7 +254,7 @@ public:
     out[1] = '1';
     out[2] = 'O';
     out[3] = 'S';
-    out[4] = 6;
+    out[4] = 7;
     out[5] = loaded_ ? 1 : 0;
     out[6] = source_position_.room_id;
     write_i16(&out[7], source_position_.obj_x);
@@ -255,6 +270,8 @@ public:
       out[18] = cave_position.x;
       out[19] = cave_position.y;
     }
+    out[17] = static_cast<std::uint8_t>(grid_offset_);
+    out[20] = static_cast<std::uint8_t>(walk_direction_);
     if (octoroks_.initialized()) {
       const auto combat = octoroks_.serialize();
       std::copy(combat.begin(), combat.end(), out.begin() + 32);
@@ -272,8 +289,8 @@ public:
       return false;
     }
     std::array<std::uint8_t, kSerializedSize> migrated{};
-    if (!migrate_serialized(blob, &migrated) || !validate_v6(migrated)) {
-      set_error(error, "invalid Zelda1OverworldSession v6 state");
+    if (!migrate_serialized(blob, &migrated) || !validate_v7(migrated)) {
+      set_error(error, "invalid Zelda1OverworldSession v7 state");
       return false;
     }
     const auto next_area = static_cast<OverworldSessionArea>(migrated[11]);
@@ -331,6 +348,8 @@ public:
     area_ = next_area;
     cave_index_ = migrated[12];
     start_sword_acquired_ = migrated[13] != 0;
+    grid_offset_ = static_cast<std::int8_t>(migrated[17]);
+    walk_direction_ = static_cast<OverworldWalkDirection>(migrated[20]);
     cave_control_ = cave_candidate;
     octoroks_ = combat_candidate;
     if (source_position_.room_id == 0x66 && octoroks_.initialized()) octoroks_.render_qa_markers(&framebuffer_);
@@ -339,24 +358,30 @@ public:
 
   static bool validate_serialized(std::span<const std::uint8_t> blob) {
     std::array<std::uint8_t, kSerializedSize> migrated{};
-    return migrate_serialized(blob, &migrated) && validate_v6(migrated);
+    return migrate_serialized(blob, &migrated) && validate_v7(migrated);
   }
-  static bool validate_v6(const std::array<std::uint8_t, kSerializedSize> &blob) {
+  static bool validate_v7(const std::array<std::uint8_t, kSerializedSize> &blob) {
     const bool cave = blob[11] == static_cast<std::uint8_t>(OverworldSessionArea::kCave);
     const bool canonical_padding = blob.size() == kSerializedSize &&
-        std::all_of(blob.begin() + 20, blob.begin() + 32,
+        std::all_of(blob.begin() + 21, blob.begin() + 32,
                     [](std::uint8_t byte) { return byte == 0; });
     const bool cave_fields = !cave
-        ? blob[12] == 0 && blob[15] == 0 && blob[16] == 0 && blob[17] == 0 &&
+        ? blob[12] == 0 && blob[15] == 0 && blob[16] == 0 &&
           blob[18] == 0 && blob[19] == 0
         : blob[12] == 16 && blob[15] <= 1 && blob[16] <= 1 && blob[17] == 0 &&
-          !(blob[15] != 0 && (blob[16] != 0 || blob[13] != 0));
+          blob[20] == 0 && !(blob[15] != 0 && (blob[16] != 0 || blob[13] != 0));
+    const auto offset = static_cast<std::int8_t>(blob[17]);
+    const auto direction = static_cast<OverworldWalkDirection>(blob[20]);
+    const bool walk_segment = offset >= -7 && offset <= 7 &&
+        blob[20] <= static_cast<std::uint8_t>(OverworldWalkDirection::kRight) &&
+        ((offset == 0) == (direction == OverworldWalkDirection::kNone)) &&
+        (offset == 0 || next_grid_segment_is_consistent(read_i16(&blob[7]), read_i16(&blob[9]), offset, direction));
     return blob.size() == kSerializedSize && blob[0] == 'Z' && blob[1] == '1' &&
-               blob[2] == 'O' && blob[3] == 'S' && blob[4] == 6 && blob[5] == 1 &&
+               blob[2] == 'O' && blob[3] == 'S' && blob[4] == 7 && blob[5] == 1 &&
            blob[6] < kRoomCount &&
            source_coordinates_in_bounds(read_i16(&blob[7]), read_i16(&blob[9])) &&
            blob[11] <= static_cast<std::uint8_t>(OverworldSessionArea::kCave) &&
-           blob[13] <= 1 && blob[14] <= 1 && canonical_padding && cave_fields;
+           blob[13] <= 1 && blob[14] <= 1 && canonical_padding && cave_fields && walk_segment;
   }
 
   // Model the source's stationary warp gate, rather than treating every
@@ -371,11 +396,19 @@ public:
       return OverworldSessionCaveResult::kInvalid;
     if (area_ != OverworldSessionArea::kOverworld)
       return OverworldSessionCaveResult::kNotOverworld;
+    if (grid_offset_ != 0)
+      return OverworldSessionCaveResult::kNoEntrance;
     const unsigned source_x = static_cast<unsigned>(source_position_.obj_x);
     const unsigned source_y = static_cast<unsigned>(source_position_.obj_y);
+    // CheckWarps calls GetCollidableTileStill.  That routine is not a raw
+    // ObjY lookup: GetCollidableTile first forms Link's collision point at
+    // ObjY + $0b, then reads the final-tile map at that point.  Keeping the
+    // source alignment test on ObjY while sampling the $0b-offset tile is
+    // what puts the trigger at the visible cave mouth rather than a phantom
+    // tile eleven pixels above it.
     if ((source_x & 0x0f) != 0 || (source_y & 0x0f) != 0x0d ||
-        !source_warp_trigger_at(geometry_, source_position_.obj_x,
-                                source_position_.obj_y))
+        !ow_source_still_is_warp_trigger(geometry_, source_position_.obj_x,
+                                          source_position_.obj_y))
       return OverworldSessionCaveResult::kNoEntrance;
     OverworldRoomView room{};
     if (!loader_.first_quest_data() ||
@@ -401,6 +434,8 @@ public:
     area_ = OverworldSessionArea::kCave;
     cave_index_ = entrance.destination_index;
     cave_control_ = cave_candidate;
+    grid_offset_ = 0;
+    walk_direction_ = OverworldWalkDirection::kNone;
     return OverworldSessionCaveResult::kEntered;
   }
 
@@ -550,6 +585,8 @@ public:
     area_ = OverworldSessionArea::kOverworld;
     cave_index_ = 0;
     cave_control_ = {};
+    grid_offset_ = 0;
+    walk_direction_ = OverworldWalkDirection::kNone;
     return OverworldSessionCaveResult::kReturned;
   }
 
@@ -589,11 +626,6 @@ private:
       return std::nullopt;
     return geometry.final_tiles[ty * kOwPlayfieldTileWidth + tx];
   }
-  static bool source_warp_trigger_at(const OwRoomGeometry &geometry,
-                                     std::int16_t x, std::int16_t y) {
-    const auto tile = source_final_tile_at(geometry, x, y);
-    return tile && ow_final_tile_is_warp_trigger(*tile);
-  }
   static bool source_position_is_valid(const OwRoomGeometry &geometry,
                                        std::int16_t x, std::int16_t y) {
     (void)geometry;
@@ -611,6 +643,43 @@ private:
     // This host samples the exact directional probe only at those points.
     return (x & 7) == 0 && (y & 7) == 5;
   }
+  static OverworldWalkDirection walk_direction_for(int direction,
+                                                    bool horizontal) {
+    if (horizontal)
+      return direction < 0 ? OverworldWalkDirection::kLeft
+                           : OverworldWalkDirection::kRight;
+    return direction < 0 ? OverworldWalkDirection::kUp
+                         : OverworldWalkDirection::kDown;
+  }
+  static bool walk_direction_is_horizontal(OverworldWalkDirection direction) {
+    return direction == OverworldWalkDirection::kLeft ||
+           direction == OverworldWalkDirection::kRight;
+  }
+  static int walk_direction_sign(OverworldWalkDirection direction) {
+    return direction == OverworldWalkDirection::kLeft ||
+               direction == OverworldWalkDirection::kUp
+           ? -1
+           : 1;
+  }
+  static bool walk_directions_are_opposite(OverworldWalkDirection first,
+                                           OverworldWalkDirection second) {
+    return walk_direction_is_horizontal(first) ==
+               walk_direction_is_horizontal(second) &&
+           walk_direction_sign(first) != walk_direction_sign(second);
+  }
+  static bool next_grid_segment_is_consistent(std::int16_t x, std::int16_t y,
+                                              std::int8_t offset,
+                                              OverworldWalkDirection direction) {
+    if (direction == OverworldWalkDirection::kNone) return offset == 0;
+    // The non-moving coordinate stays at the documented source grid origin
+    // throughout an in-progress segment; the moving coordinate's low bits
+    // encode its signed displacement. ObjDir may temporarily oppose it while
+    // Z_05 walks Link back to the previous point, so it cannot constrain the
+    // displacement sign here.
+    if (walk_direction_is_horizontal(direction))
+      return (y & 7) == 5 && (x & 7) == (offset < 0 ? 8 + offset : offset);
+    return (x & 7) == 0 && (y & 7) == ((5 + offset) & 7);
+  }
   static bool z07_directional_probe_walkable(const OwRoomGeometry &geometry,
                                              std::int16_t obj_x,
                                              std::int16_t obj_y,
@@ -619,7 +688,7 @@ private:
     // ObjY+$0b; up/left test -$08, down +$08, right +$10.  The source
     // suppresses the horizontal offset at its raw X boundaries and the down
     // offset once the hotspot is at/after $dd. Vertical motion
-    // samples the adjacent tile column and retains the numerically lower
+    // samples the adjacent tile column and retains the numerically higher
     // final tile, exactly matching the source's blocking comparison.
     std::int16_t probe_x = obj_x;
     std::int16_t probe_y = static_cast<std::int16_t>(obj_y + 0x0b);
@@ -636,7 +705,12 @@ private:
       const auto adjacent = source_final_tile_at(geometry,
           static_cast<std::int16_t>(probe_x + 8), probe_y);
       if (!adjacent) return false;
-      if (*adjacent < *tile) tile = adjacent;
+      // Z_07:GetCollidableTile compares `adjacent` against the first tile
+      // and keeps the numerically higher value.  Unwalkable final tiles sort
+      // after walkable ones, so taking the lower tile inverted vertical
+      // collision: visible blockers could be crossed and harmless adjacent
+      // terrain could become an invisible wall.
+      if (*adjacent > *tile) tile = adjacent;
     }
     return ow_final_tile_is_walkable(*tile);
   }
@@ -645,8 +719,17 @@ private:
     if (!out || blob.size() != kSerializedSize || blob[0] != 'Z' ||
         blob[1] != '1' || blob[2] != 'O' || blob[3] != 'S' || blob[5] != 1)
       return false;
+    if (blob[4] == 7) {
+      std::copy(blob.begin(), blob.end(), out->begin());
+      return true;
+    }
     if (blob[4] == 6) {
       std::copy(blob.begin(), blob.end(), out->begin());
+      (*out)[4] = 7;
+      // v6 had byte 17 canonical zero and no direction state. A restored
+      // record is therefore at a source grid boundary with no carried input.
+      (*out)[17] = 0;
+      (*out)[20] = 0;
       return true;
     }
     // v5 persisted cropped uint8 coordinates.  Its grammar is checked
@@ -670,7 +753,7 @@ private:
         (!combat_present && !std::all_of(blob.begin()+32, blob.end(), [](std::uint8_t b){ return b == 0; })))
       return false;
     out->fill(0);
-    (*out)[0]='Z'; (*out)[1]='1'; (*out)[2]='O'; (*out)[3]='S'; (*out)[4]=6;
+    (*out)[0]='Z'; (*out)[1]='1'; (*out)[2]='O'; (*out)[3]='S'; (*out)[4]=7;
     (*out)[5]=1; (*out)[6]=blob[6];
     write_i16(&(*out)[7], static_cast<std::int16_t>(blob[7] + 8));
     write_i16(&(*out)[9], static_cast<std::int16_t>(blob[8] + 72));
@@ -797,6 +880,31 @@ private:
   }
   bool step_axis(int direction, bool horizontal,
                  OverworldSessionMoveResult *result) {
+    // Z_05:Link_ModifyDirOnGridLine keeps the active line between points.
+    // Opposite input walks back toward the preceding point. A perpendicular
+    // request in the first half reverses to that point first; in the second
+    // half it keeps the existing line. It never changes axes mid-segment.
+    if (grid_offset_ != 0) {
+      const auto requested = walk_direction_for(direction, horizontal);
+      if (walk_directions_are_opposite(requested, walk_direction_)) {
+        walk_direction_ = requested;
+      } else if (walk_direction_is_horizontal(requested) !=
+                 walk_direction_is_horizontal(walk_direction_)) {
+        const int displacement_sign = grid_offset_ < 0 ? -1 : 1;
+        const int active_sign = walk_direction_sign(walk_direction_);
+        if ((grid_offset_ < 0 ? -grid_offset_ : grid_offset_) < 4 &&
+            displacement_sign == active_sign) {
+          walk_direction_ = walk_direction_for(
+              -active_sign, walk_direction_is_horizontal(walk_direction_));
+          grid_offset_ = static_cast<std::int8_t>(
+              active_sign > 0 ? -8 + grid_offset_ : 8 + grid_offset_);
+        }
+      }
+      horizontal = walk_direction_is_horizontal(walk_direction_);
+      direction = walk_direction_sign(walk_direction_);
+    } else {
+      walk_direction_ = walk_direction_for(direction, horizontal);
+    }
     const auto edge =
         horizontal
             ? (direction < 0 ? OwScreenEdge::kWest : OwScreenEdge::kEast)
@@ -804,30 +912,37 @@ private:
     const auto current = horizontal ? source_position_.obj_x : source_position_.obj_y;
     const auto proposed = static_cast<std::int16_t>(current + direction);
     const auto edge_coordinate = static_cast<std::int16_t>(ow_player_screen_edge_coordinate(edge));
-    if (proposed < (horizontal ? kSourceMinX : kSourceMinY) ||
-        proposed > (horizontal ? kSourceMaxX : kSourceMaxY)) {
-      *result = OverworldSessionMoveResult::kBlocked;
-      return false;
-    }
-    // Z_07:PlayerUnwalkable calls CheckScreenEdge only at the exact raw
-    // edge.  We model the source mode-6 outcome atomically: no neighbour
-    // frame/room state is committed until it was rendered successfully.
-    const auto candidate_x = horizontal ? proposed : source_position_.obj_x;
-    const auto candidate_y = horizontal ? source_position_.obj_y : proposed;
-    if (proposed != edge_coordinate) {
-      if (!source_collision_sample_due(candidate_x, candidate_y, horizontal)) {
-        if (horizontal) source_position_.obj_x = proposed;
-        else source_position_.obj_y = proposed;
-        return true;
+    // Walker_CheckTileCollision runs before MoveObject. Its probe and
+    // CheckScreenEdge therefore use the *current* aligned Obj coordinates;
+    // checking `proposed` stopped one pixel early and lost the source grid.
+    const auto current_x = source_position_.obj_x;
+    const auto current_y = source_position_.obj_y;
+    if (current != edge_coordinate) {
+      if (proposed < (horizontal ? kSourceMinX : kSourceMinY) ||
+          proposed > (horizontal ? kSourceMaxX : kSourceMaxY)) {
+        *result = OverworldSessionMoveResult::kBlocked;
+        return false;
       }
-      if (!z07_directional_probe_walkable(geometry_, candidate_x, candidate_y, direction,
+      if (source_collision_sample_due(current_x, current_y, horizontal) &&
+          !z07_directional_probe_walkable(geometry_, current_x, current_y, direction,
                                           horizontal)) {
+        grid_offset_ = 0;
+        walk_direction_ = OverworldWalkDirection::kNone;
         *result = OverworldSessionMoveResult::kBlocked;
         return false;
       }
       if (horizontal) source_position_.obj_x = proposed;
       else source_position_.obj_y = proposed;
+      grid_offset_ = static_cast<std::int8_t>(grid_offset_ + direction);
+      if (grid_offset_ == 8 || grid_offset_ == -8) {
+        grid_offset_ = 0;
+        walk_direction_ = OverworldWalkDirection::kNone;
+      }
       return true;
+    }
+    if (!source_collision_sample_due(current_x, current_y, horizontal)) {
+      *result = OverworldSessionMoveResult::kBlocked;
+      return false;
     }
     std::uint8_t neighbor = 0;
     if (!overworld_neighbor(source_position_.room_id, edge, &neighbor)) {
@@ -868,6 +983,8 @@ private:
     geometry_ = geometry_candidate;
     framebuffer_ = frame_candidate;
     octoroks_ = octorok_candidate;
+    grid_offset_ = 0;
+    walk_direction_ = OverworldWalkDirection::kNone;
     *result = OverworldSessionMoveResult::kCrossedRoom;
     return true;
   }
@@ -882,6 +999,10 @@ private:
   Zelda1StartCaveControl cave_control_{};
   bool loaded_ = false;
   Ow66OctorokRuntime octoroks_{};
+  // Host representation of Z_07's signed ObjGridOffset/ObjDir segment.
+  // It is zero at an aligned source grid point and otherwise in [-7,7].
+  std::int8_t grid_offset_ = 0;
+  OverworldWalkDirection walk_direction_ = OverworldWalkDirection::kNone;
 };
 
 } // namespace minish::foreign_world::zelda1
