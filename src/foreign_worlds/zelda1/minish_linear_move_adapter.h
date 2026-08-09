@@ -13,6 +13,13 @@ namespace minish::foreign_world::zelda1 {
 // pointer and never writes guest state; Zelda1OverworldSession owns terrain
 // collision after the delta has been derived.
 inline constexpr std::uint32_t kMinishPlayerEntityAddress = 0x03001160u;
+// Source: zeldaret/tmc include/player.h PlayerActions / PlayerStateFlags and
+// src/player.c PlayerRollUpdate.  A live foreign roll is only accepted when
+// both independent source facts agree.  Entity::speed is Q8.8 at +0x24 and
+// Entity::direction is the 0..31 LinearMoveDirectionOLD domain at +0x15.
+inline constexpr std::uint8_t kMinishPlayerRollAction = 24;
+inline constexpr std::uint32_t kMinishPlayerRollingFlag = 0x00040000u;
+inline constexpr std::uint16_t kMinishRollMaximumSpeedQ8_8 = 0x0300u;
 
 struct LinearMoveDelta {
     std::int16_t x = 0;
@@ -31,6 +38,35 @@ struct LinearMoveAccumulator {
     [[nodiscard]] bool step(std::uint8_t direction, std::uint32_t speed,
                             LinearMoveDelta* delta);
     void reset() { x_q8 = 0; y_q8 = 0; }
+};
+
+struct MinishRollMotionSample {
+    std::uint8_t action = 0;
+    std::uint8_t direction = 0;
+    std::uint16_t speed_q8_8 = 0;
+    std::uint32_t player_flags = 0;
+
+    [[nodiscard]] bool rolling() const {
+        return action == kMinishPlayerRollAction &&
+               (player_flags & kMinishPlayerRollingFlag) != 0;
+    }
+};
+
+// A bounded, host-only mirror of the PlayerRollUpdate movement output.  It
+// deliberately accepts no KEYINPUT: while a source roll remains live, its
+// Entity::direction/speed own the momentum even after the player releases the
+// D-pad.  Invalid source samples fail closed without emitting an unbounded
+// host delta; ending a roll clears the Q8.8 remainder before walk resumes.
+class MinishRollMotionAccumulator {
+public:
+    enum class Result : std::uint8_t { kNotRolling, kMoved, kNoMotion, kInvalid };
+
+    [[nodiscard]] Result step(const MinishRollMotionSample& sample,
+                              LinearMoveDelta* delta);
+    void reset() { accumulator_.reset(); }
+
+private:
+    LinearMoveAccumulator accumulator_{};
 };
 
 // Exact narrow replacement gate. It deliberately identifies the one static

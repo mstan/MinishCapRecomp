@@ -48230,6 +48230,11 @@ mode = "thumb"
 name = "InitPauseMenu"
 note = "build/USA/src/menu/figurineMenu.o"
 
+[[mod_function_hook]]
+addr = 0x080A4D88
+mode = "thumb"
+note = "Source-gated InitPauseMenu observer: temporarily suspends active Zelda 1 foreign presentation while the native pause menu owns composition."
+
 [[extra_func]]
 addr = 0x080A4DA8
 mode = "thumb"

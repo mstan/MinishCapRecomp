@@ -29,6 +29,54 @@ int main() {
     if (a.step(0x80, 0x100, &delta) || a.step(32, 0x100, &delta))
         return (std::cerr << "FAIL: unsupported source direction did not decline\n", 1);
 
+    // Source: PlayerRollUpdate accepts only PLAYER_ROLL plus PL_ROLLING and
+    // feeds its live Entity::direction/speed to UpdatePlayerMovement.  Its
+    // largest ordinary phase is 0x300 Q8.8.  The host mirror retains exact
+    // fixed-point movement but rejects a corrupt larger sample before it can
+    // produce an unbounded foreign-world move.
+    z1::MinishRollMotionAccumulator roll;
+    z1::MinishRollMotionSample roll_sample{
+        z1::kMinishPlayerRollAction, 8, 0x200,
+        z1::kMinishPlayerRollingFlag};
+    if (roll.step(roll_sample, &delta) !=
+            z1::MinishRollMotionAccumulator::Result::kMoved ||
+        delta.x != 2 || delta.y != 0)
+        return (std::cerr << "FAIL: source 2px roll did not preserve Q8.8 displacement\n", 1);
+    roll_sample.speed_q8_8 = 0x300;
+    if (roll.step(roll_sample, &delta) !=
+            z1::MinishRollMotionAccumulator::Result::kMoved ||
+        delta.x != 3 || delta.y != 0)
+        return (std::cerr << "FAIL: source 3px roll was not bounded exactly\n", 1);
+    // A diagonal direction is owned by the source action, independent of an
+    // opposite/held host D-pad. Both axes stay within the three-pixel bound.
+    roll_sample.direction = 4;
+    if (roll.step(roll_sample, &delta) !=
+            z1::MinishRollMotionAccumulator::Result::kMoved ||
+        delta.x < -3 || delta.x > 3 || delta.y < -3 || delta.y > 3 ||
+        (delta.x == 0 && delta.y == 0))
+        return (std::cerr << "FAIL: diagonal roll did not derive bounded source momentum\n", 1);
+    roll_sample.speed_q8_8 = 0;
+    if (roll.step(roll_sample, &delta) !=
+            z1::MinishRollMotionAccumulator::Result::kNoMotion ||
+        delta.x != 0 || delta.y != 0)
+        return (std::cerr << "FAIL: source roll zero-speed phase moved host terrain\n", 1);
+    roll_sample.action = 1; // PLAYER_NORMAL ends the roll and clears remainder.
+    if (roll.step(roll_sample, &delta) !=
+            z1::MinishRollMotionAccumulator::Result::kNotRolling)
+        return (std::cerr << "FAIL: roll termination did not clear host momentum\n", 1);
+    roll_sample.action = z1::kMinishPlayerRollAction;
+    roll_sample.direction = 8;
+    roll_sample.speed_q8_8 = 0x200;
+    if (roll.step(roll_sample, &delta) !=
+            z1::MinishRollMotionAccumulator::Result::kMoved ||
+        delta.x != 2 || delta.y != 0)
+        return (std::cerr << "FAIL: ended roll leaked fractional momentum into next roll\n", 1);
+    roll_sample.speed_q8_8 = 0x301;
+    if (roll.step(roll_sample, &delta) !=
+            z1::MinishRollMotionAccumulator::Result::kInvalid ||
+        delta.x != 0 || delta.y != 0)
+        return (std::cerr << "FAIL: corrupt roll speed was not failure-atomic\n", 1);
+
     if (!z1::can_replace_linear_move(z1::kMinishPlayerEntityAddress, true, true) ||
         z1::can_replace_linear_move(z1::kMinishPlayerEntityAddress + 0x88, true, true) ||
         z1::can_replace_linear_move(z1::kMinishPlayerEntityAddress, false, true) ||

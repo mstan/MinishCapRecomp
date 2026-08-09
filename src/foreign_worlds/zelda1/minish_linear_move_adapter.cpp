@@ -62,6 +62,29 @@ bool LinearMoveAccumulator::step(std::uint8_t direction, std::uint32_t speed,
     return true;
 }
 
+MinishRollMotionAccumulator::Result MinishRollMotionAccumulator::step(
+    const MinishRollMotionSample& sample, LinearMoveDelta* delta) {
+    if (!delta) return Result::kInvalid;
+    *delta = {};
+    if (!sample.rolling()) {
+        reset();
+        return Result::kNotRolling;
+    }
+    // PlayerRollUpdate writes 0x200, 0x220, 0x300, or 0 before calling
+    // UpdatePlayerMovement.  Keep that source envelope explicit so a corrupt
+    // guest read can neither teleport through a Zelda wall nor consume a warp.
+    if (sample.speed_q8_8 > kMinishRollMaximumSpeedQ8_8) {
+        reset();
+        return Result::kInvalid;
+    }
+    if (sample.speed_q8_8 == 0) return Result::kNoMotion;
+    if (!accumulator_.step(sample.direction, sample.speed_q8_8, delta)) {
+        reset();
+        return Result::kInvalid;
+    }
+    return delta->x == 0 && delta->y == 0 ? Result::kNoMotion : Result::kMoved;
+}
+
 bool can_replace_linear_move(std::uint32_t entity_address,
                              bool foreign_session_active,
                              bool survival_safe) {

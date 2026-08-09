@@ -98,6 +98,24 @@ host pointers.
 - Map memory supports 128×128 8-pixel tiles (top `0200B650`, bottom
   `02025EB0`) and therefore comfortably supports a 256×176 foreign room.
 
+### Foreign-world roll momentum
+
+While the foreign session is already active, movement additionally reads (but
+never writes) `gPlayerEntity.base.action` at `0300116C`, `direction` at
+`03001175`, Q8.8 `speed` at `03001184`, and `gPlayerState.flags` at
+`03003FB0`. Pinned `src/player.c:PlayerRollUpdate` identifies its live state
+as `PLAYER_ROLL` (24) with `PL_ROLLING` (`0x00040000`) and drives
+`UpdatePlayerMovement` with normal output phases `0x200`, `0x220`, `0x300`,
+and `0`.
+
+The host mirrors that source direction/speed through the pinned
+`LinearMoveDirectionOLD` fixed-point table, accepts no speed above `0x300`,
+and replays every resulting pixel through the ordinary Zelda collision and
+entrance seam. A roll consequently continues after D-pad release or opposing
+input, a zero-speed phase stays still, and it cannot skip a wall or warp. A
+non-roll action clears the host-only fractional remainder and resumes the
+existing one-pixel D-pad walk policy; it does not end the active session.
+
 ### Source-proven South Hyrule Field readiness gate
 
 The first interactive portal is **not** the starting house. The first safe

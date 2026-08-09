@@ -28,6 +28,8 @@ std::uint8_t g_transitioning_out = 0;
 std::uint16_t g_keyinput = 0x03ff;
 std::uint8_t g_main_substate = 2, g_player_kind = 1, g_player_flags = 0xA0;
 std::uint8_t g_player_action = 1, g_player_draw = 0x13, g_player_killed = 0;
+std::uint8_t g_player_direction = 8;
+std::uint16_t g_player_speed = 0;
 std::uint8_t g_pause_player = 0, g_message_state = 0;
 std::uint16_t g_priority_timer = 0;
 std::uint32_t g_move_locks = 0x8, g_player_macro = 0;
@@ -37,6 +39,8 @@ std::uint8_t g_active_item_animation = 0, g_player_sword_state = 0;
 std::uint8_t g_player_attack_status = 0, g_player_animation_state = 0;
 std::uint16_t g_player_sprite_vram_offset = 0x160;
 unsigned g_bus_write_count = 0;
+bool g_background_publish_allowed = true;
+bool g_focus_publish_allowed = true;
 
 int fail(const std::string& message) {
     std::cerr << "FAIL: " << message << "\n";
@@ -178,6 +182,36 @@ bool source_cave_stationary_hotspot(
     return true;
 }
 
+// Z_01's cave-person state checks the current ObjX and abs(ObjY-$98) each
+// ordinary update; produce that exact ROM-backed, post-text touch position so
+// the plugin test can prove no A edge is needed to take the wooden sword.
+bool source_start_sword_touch_hotspot(
+    const char* path,
+    std::array<std::uint8_t, z1::Zelda1OverworldSession::kSerializedSize>* state) {
+    if (!path || !state) return false;
+    z1::Zelda1OverworldSession session;
+    std::string error;
+    if (!session.load_hash_validated_ines(path, z1::Zelda1OverworldSession::kInitialRoom,
+                                          &error)) return false;
+    auto candidate = session.serialize();
+    stage_source_position(&candidate, 0x40, 0x4d);
+    if (!session.restore(candidate, &error) ||
+        session.try_enter_cave() != z1::OverworldSessionCaveResult::kEntered)
+        return false;
+    while (!session.cave_dialogue_acknowledged())
+        if (!session.tick_cave_frame()) return false;
+    for (unsigned i = 0; i != 0x15; ++i)
+        if (session.move_cave_one(z1::CaveDirection::kUp) != z1::StartCaveMoveResult::kMoved)
+            return false;
+    for (unsigned i = 0; i != 8; ++i)
+        if (session.move_cave_one(z1::CaveDirection::kRight) != z1::StartCaveMoveResult::kMoved)
+            return false;
+    const auto position = session.cave_source_position();
+    if (!position || position->x != 0x78 || position->y != 0x98) return false;
+    *state = session.serialize();
+    return true;
+}
+
 bool source_level1_crossing_start(
     const char* path, std::array<std::uint8_t, z1::Zelda1OverworldSession::kSerializedSize>* state,
     std::uint16_t* key) {
@@ -266,7 +300,8 @@ extern "C" int gba_mod_register_reset_callback(GBAModActivationCallback) {
 }
 extern "C" int gba_mod_publish_foreign_background(const char* plugin_id,
                                                     const std::uint16_t* pixels) {
-    if (std::string(plugin_id) != z1::kZelda1ForeignWorldPluginId || !pixels)
+    if (!g_background_publish_allowed ||
+        std::string(plugin_id) != z1::kZelda1ForeignWorldPluginId || !pixels)
         return 0;
     g_foreign_background = pixels;
     return 1;
@@ -276,7 +311,8 @@ extern "C" void gba_mod_clear_foreign_background() {
 }
 extern "C" int gba_mod_publish_foreign_obj_focus(
     const char* plugin_id, const GbaForeignObjFocusTransform* focus) {
-    if (std::string(plugin_id) != z1::kZelda1ForeignWorldPluginId || !focus)
+    if (!g_focus_publish_allowed ||
+        std::string(plugin_id) != z1::kZelda1ForeignWorldPluginId || !focus)
         return 0;
     g_foreign_focus = focus;
     return 1;
@@ -298,6 +334,7 @@ extern "C" std::uint8_t bus_read_u8(std::uint32_t address) {
     case 0x03001168: return g_player_kind;
     case 0x03001170: return g_player_flags; // 0xA0 is valid Player state.
     case 0x0300116C: return g_player_action;
+    case 0x03001175: return g_player_direction;
     case 0x03001178: return g_player_draw;
     case 0x03003FBC: return g_player_killed;
     case 0x03003F8A: return g_pause_player;
@@ -314,6 +351,7 @@ extern "C" std::uint8_t bus_read_u8(std::uint32_t address) {
 extern "C" std::uint16_t bus_read_u16(std::uint32_t address) {
     if (address == 0x04000130) return g_keyinput;
     if (address == 0x03003DC8) return g_priority_timer;
+    if (address == 0x03001184) return g_player_speed;
     if (address == 0x030011C0) return g_player_sprite_vram_offset;
     return 0;  // The saved Mode 3 VRAM snapshot is irrelevant to this bridge test.
 }
@@ -354,6 +392,7 @@ int main(int argc, char** argv) {
     g_asset_path = argv[1];
     g_area = 3; g_room = 1; g_transitioning_out = 0; g_main_substate = 2;
     g_player_kind = 1; g_player_flags = 0xA0; g_player_action = 1;
+    g_player_direction = 8; g_player_speed = 0;
     g_player_draw = 0x13; g_player_killed = 0; g_pause_player = 0;
     g_message_state = 0; g_priority_timer = 0; g_move_locks = 0;
     g_player_macro = 0; g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
@@ -362,15 +401,215 @@ int main(int argc, char** argv) {
         return fail("actual validated iNES asset did not enable the trusted hooks");
     ArmCpuState observe_cpu{};
     const auto observe_before = observe_cpu;
+    const unsigned writes_before_phase_order_entry = g_bus_write_count;
+    // The two observed UpdateEntities entries can expose different native
+    // phases for one gRoomTransition.frameCount. A transient ROM phase must
+    // not consume the source-frame activation heartbeat before the IWRAM
+    // phase satisfies every documented portal predicate. Conversely, this is
+    // still exactly 18 *frames*, not 36 callbacks.
     for (unsigned i = 0; i < z1::SmithYardQaRoom::kActivationUpdates; ++i) {
         ++g_frame;
+        g_main_substate = 0; g_player_draw = 0; g_player_action = 4;
+        g_pause_player = 0x80; g_message_state = 1; g_priority_timer = 1;
+        g_move_locks = 0x22189B75u; g_player_macro = 1;
         if (gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu) != 0)
             return fail("read-only UpdateEntities observer unexpectedly replaced guest control");
+        if (g_foreign_background || g_foreign_focus)
+            return fail("unready ROM phase entered Zelda before its ready IWRAM peer");
+        g_main_substate = 2; g_player_draw = 0x13; g_player_action = 1;
+        g_pause_player = 0; g_message_state = 0; g_priority_timer = 0;
+        g_move_locks = 0; g_player_macro = 0;
+        if (gba_mod_function_entry(0x03005F40u, 0, &observe_cpu) != 0)
+            return fail("read-only IWRAM UpdateEntities observer unexpectedly replaced guest control");
+        if (i + 1 < z1::SmithYardQaRoom::kActivationUpdates &&
+            (g_foreign_background || g_foreign_focus))
+            return fail("duplicate hook callbacks shortened source-frame portal activation");
     }
     if (observe_cpu.R[15] != observe_before.R[15] || !g_foreign_background || !g_foreign_focus ||
+        g_bus_write_count != writes_before_phase_order_entry ||
         g_foreign_focus->destination_link_feet_x != 128 ||
         g_foreign_focus->destination_link_feet_y != 101)
-        return fail("plugin did not publish the OW mode frame/focus through the trusted seam");
+        return fail("later ready IWRAM phase did not publish OW exactly on source activation frame");
+    const auto make_unready_phase = [] {
+        g_main_substate = 0; g_player_draw = 0; g_player_action = 4;
+        g_pause_player = 0x80; g_message_state = 1; g_priority_timer = 1;
+        g_move_locks = 0x22189B75u; g_player_macro = 1;
+    };
+    const auto make_ready_phase = [] {
+        g_main_substate = 2; g_player_draw = 0x13; g_player_action = 1;
+        g_pause_player = 0; g_message_state = 0; g_priority_timer = 0;
+        g_move_locks = 0; g_player_macro = 0;
+    };
+    // Leave that first active lease, then release only during an unready
+    // inactive phase. The release must clear the exit latch without becoming
+    // an entry heartbeat. Mirror the source phase order afterward: IWRAM
+    // transient first, ROM ready second, for exactly 18 source frames.
+    g_keyinput = 0x03ff;
+    make_unready_phase();
+    ++g_frame;
+    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
+    make_ready_phase();
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (g_foreign_background || g_foreign_focus ||
+        minish::foreign_world::foreign_world_native_state().zelda1_presentation_active())
+        return fail("explicit chord did not leave the first phase-order Zelda lease");
+    g_keyinput = 0x03ff;
+    make_unready_phase();
+    ++g_frame;
+    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
+    for (unsigned i = 0; i < z1::SmithYardQaRoom::kActivationUpdates; ++i) {
+        g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
+        make_unready_phase();
+        ++g_frame;
+        (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
+        if (g_foreign_background || g_foreign_focus)
+            return fail("unready IWRAM phase re-entered Zelda before its ready ROM peer");
+        make_ready_phase();
+        (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+        if (i + 1 < z1::SmithYardQaRoom::kActivationUpdates &&
+            (g_foreign_background || g_foreign_focus))
+            return fail("ready ROM second phase shortened source-frame portal activation");
+    }
+    if (!g_foreign_background || !g_foreign_focus)
+        return fail("ready ROM phase did not enter Zelda after 18 mirrored source frames");
+    // A partial source-ready hold must be discarded by a later unready
+    // release; otherwise the next portal attempt inherits stale heartbeats.
+    g_keyinput = 0x03ff;
+    make_ready_phase();
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (g_foreign_background || g_foreign_focus)
+        return fail("second explicit chord did not leave Zelda before partial-hold replay");
+    g_keyinput = 0x03ff;
+    make_unready_phase();
+    ++g_frame;
+    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
+    make_ready_phase();
+    for (unsigned i = 0; i != 5; ++i) {
+        ++g_frame;
+        (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    }
+    g_keyinput = 0x03ff;
+    make_unready_phase();
+    ++g_frame;
+    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
+    make_ready_phase();
+    for (unsigned i = 0; i < z1::SmithYardQaRoom::kActivationUpdates; ++i) {
+        ++g_frame;
+        (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+        if (i + 1 < z1::SmithYardQaRoom::kActivationUpdates &&
+            (g_foreign_background || g_foreign_focus))
+            return fail("unready release failed to discard the partial portal hold");
+    }
+    if (!g_foreign_background || !g_foreign_focus)
+        return fail("full ready hold after unready release could not re-enter Zelda");
+    // TMC player.c:CheckInitPauseMenu calls InitPauseMenu only after validating
+    // a new Start press and normal control. The exact InitPauseMenu hook must
+    // therefore suspend the foreign PPU pair without treating raw/rejected
+    // Start input as a menu, and the next UpdateEntities after native menu
+    // close must restore the same host-owned Zelda session.
+    const auto menu_blob_before = minish::foreign_world::foreign_world_native_state()
+        .zelda1_overworld_session_blob();
+    const auto menu_focus_before = *g_foreign_focus;
+    const unsigned writes_before_menu = g_bus_write_count;
+    if (gba_mod_function_entry(0x080A4D8Au, 1, &observe_cpu) != 0 ||
+        !g_foreign_background || !g_foreign_focus)
+        return fail("non-matching pause-menu code address changed foreign presentation");
+    if (gba_mod_function_entry(0x080A4D88u, 1, &observe_cpu) != 0 ||
+        g_foreign_background || g_foreign_focus ||
+        !minish::foreign_world::foreign_world_native_state().zelda1_presentation_active() ||
+        g_bus_write_count != writes_before_menu || !same_cpu(observe_cpu, observe_before))
+        return fail("eligible native InitPauseMenu did not suspend foreign presentation read-only");
+    // A provider snapshot made while native menu composition owns the screen
+    // must retain logical Zelda activity.  Restoring it may rebuild the host
+    // session, but it must not reinterpret the temporary cleared pointers as
+    // an inactive world or lose the exact source position.
+    minish::foreign_world::ForeignWorldNativeState menu_open_snapshot;
+    std::string menu_snapshot_error;
+    if (!menu_open_snapshot.set_zelda1_overworld_session_blob(menu_blob_before,
+                                                                &menu_snapshot_error))
+        return fail("could not stage menu-open foreign snapshot: " + menu_snapshot_error);
+    menu_open_snapshot.set_zelda1_presentation_active(true);
+    minish::foreign_world::foreign_world_native_state().replace_after_provider_restore(
+        std::move(menu_open_snapshot));
+    ++g_frame;
+    g_keyinput = 0x03ff;
+    if (gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu) != 0 ||
+        !g_foreign_background || !g_foreign_focus ||
+        !minish::foreign_world::foreign_world_native_state().zelda1_presentation_active() ||
+        minish::foreign_world::foreign_world_native_state().zelda1_overworld_session_blob() !=
+            menu_blob_before ||
+        g_foreign_focus->destination_link_feet_x != menu_focus_before.destination_link_feet_x ||
+        g_foreign_focus->destination_link_feet_y != menu_focus_before.destination_link_feet_y ||
+        g_bus_write_count != writes_before_menu || !same_cpu(observe_cpu, observe_before))
+        return fail("native pause-menu close did not resume the stable Zelda session read-only");
+    // A rejected first menu-close publication happens after InitPauseMenu has
+    // intentionally cleared the foreign PPU pair. It must still retain the
+    // logical Zelda shield (blocking native player motion), freeze/retry on
+    // the following source frame, and never turn the transient null pair into
+    // a silent world return.
+    if (gba_mod_function_entry(0x080A4D88u, 1, &observe_cpu) != 0 ||
+        g_foreign_background || g_foreign_focus)
+        return fail("menu-close failure fixture could not suspend Zelda presentation");
+    g_background_publish_allowed = false;
+    ++g_frame;
+    g_keyinput = 0x03ff;
+    if (gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu) != 0 ||
+        g_foreign_background || g_foreign_focus ||
+        !minish::foreign_world::foreign_world_native_state().zelda1_presentation_active())
+        return fail("rejected menu-close publication lost the logical Zelda shield");
+    ArmCpuState frozen_menu_move{};
+    frozen_menu_move.R[0] = z1::kMinishPlayerEntityAddress;
+    frozen_menu_move.R[14] = 0x0800ABCDu;
+    const auto frozen_menu_move_before = frozen_menu_move;
+    if (gba_mod_function_entry(0x080027EAu, 1, &frozen_menu_move) != 1 ||
+        frozen_menu_move.R[15] !=
+            z1::linear_move_handled_return_pc(frozen_menu_move_before.R[14]))
+        return fail("rejected menu-close publication reopened native player movement");
+    g_background_publish_allowed = true;
+    ++g_frame;
+    if (gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu) != 0 ||
+        !g_foreign_background || !g_foreign_focus ||
+        !minish::foreign_world::foreign_world_native_state().zelda1_presentation_active())
+        return fail("healthy menu-close retry did not resume the frozen Zelda session");
+    // A provider restore while the native Start menu owns the compositor may
+    // explicitly make the Zelda presentation inactive. That restore is a
+    // lifecycle boundary, so it must clear the menu-only suspension latch;
+    // otherwise every later observer returns before it can see a legitimate
+    // portal chord.
+    if (gba_mod_function_entry(0x080A4D88u, 1, &observe_cpu) != 0 ||
+        g_foreign_background || g_foreign_focus)
+        return fail("second native InitPauseMenu did not suspend Zelda fixture");
+    minish::foreign_world::ForeignWorldNativeState inactive_menu_snapshot;
+    if (!inactive_menu_snapshot.set_zelda1_overworld_session_blob(
+            menu_blob_before, &menu_snapshot_error))
+        return fail("could not stage inactive menu provider snapshot: " + menu_snapshot_error);
+    inactive_menu_snapshot.set_zelda1_presentation_active(false);
+    minish::foreign_world::foreign_world_native_state().replace_after_provider_restore(
+        std::move(inactive_menu_snapshot));
+    g_keyinput = 0x03ff;
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (g_foreign_background || g_foreign_focus ||
+        minish::foreign_world::foreign_world_native_state().zelda1_presentation_active() ||
+        g_bus_write_count != writes_before_menu)
+        return fail("inactive menu restore did not clear presentation before re-entry");
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
+    for (unsigned i = 0; i < z1::SmithYardQaRoom::kActivationUpdates; ++i) {
+        ++g_frame;
+        (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    }
+    if (!g_foreign_background || !g_foreign_focus ||
+        !minish::foreign_world::foreign_world_native_state().zelda1_presentation_active() ||
+        g_bus_write_count != writes_before_menu)
+        return fail("inactive menu restore left portal entry permanently suspended");
     // Foreign locomotion is frame/KEYINPUT driven.  Deliberately do not call
     // LinearMoveDirectionOLD here: Minish collision can suppress that
     // callback inside the native starting house, but a held D-pad still must
@@ -397,6 +636,71 @@ int main(int argc, char** argv) {
         return fail("ROM/IWRAM observers applied foreign locomotion twice in one frame");
     if (g_bus_write_count != writes_before_locomotion || observe_cpu.R[15] != observe_before.R[15])
         return fail("KEYINPUT-only foreign locomotion wrote guest memory or CPU state");
+    // The ROM and IWRAM UpdateEntities hooks can bracket distinct native
+    // phases of one gRoomTransition.frameCount.  The active Zelda lease must
+    // neither run its lifecycle twice nor treat underlying Minish roll/item/
+    // menu/redraw state as an unrequested return portal. Exercise both hook
+    // orders, then a long alternate-phase replay, using only read-only guest
+    // observations and released input.
+    const unsigned writes_before_lifecycle = g_bus_write_count;
+    const auto check_foreign_lease = [&]() {
+        return g_foreign_background && g_foreign_focus &&
+            minish::foreign_world::foreign_world_native_state().zelda1_presentation_active();
+    };
+    // Transient lock first, then the normal phase on the same source frame.
+    ++g_frame;
+    g_main_substate = 0; g_player_draw = 0; g_player_action = 4;
+    g_pause_player = 0x80; g_message_state = 1; g_priority_timer = 1;
+    g_move_locks = 0x22189B75u; g_player_macro = 1; g_keyinput = 0x03ff;
+    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
+    if (!check_foreign_lease())
+        return fail("IWRAM transient action/menu phase unexpectedly returned from Zelda");
+    g_main_substate = 2; g_player_draw = 0x13; g_player_action = 1;
+    g_pause_player = 0; g_message_state = 0; g_priority_timer = 0;
+    g_move_locks = 0; g_player_macro = 0;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (!check_foreign_lease())
+        return fail("ROM second hook unexpectedly returned from Zelda");
+    // Normal phase first, then the same transient state on the opposite hook.
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    g_main_substate = 0; g_player_draw = 0; g_player_action = 4;
+    g_pause_player = 0x80; g_message_state = 1; g_priority_timer = 1;
+    g_move_locks = 0x22189B75u; g_player_macro = 1;
+    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
+    if (!check_foreign_lease())
+        return fail("IWRAM second transient hook unexpectedly returned from Zelda");
+    // Headless long-run replay: normal and transient guest action/UI phases
+    // alternate for 1,024 native frames, and their hook order alternates too.
+    // Neither is an explicit all-D-pad return chord nor a fatal lifecycle.
+    for (unsigned frame = 0; frame != 1024; ++frame) {
+        ++g_frame;
+        const bool transient = (frame & 1) != 0;
+        g_main_substate = transient ? 0 : 2;
+        g_player_draw = transient ? 0 : 0x13;
+        g_player_action = transient ? 4 : 1;
+        g_pause_player = transient ? 0x80 : 0;
+        g_message_state = transient ? 1 : 0;
+        g_priority_timer = transient ? 1 : 0;
+        g_move_locks = transient ? 0x22189B75u : 0;
+        g_player_macro = transient ? 1 : 0;
+        g_keyinput = 0x03ff;
+        const std::uint32_t first_hook =
+            (frame & 2) == 0 ? 0x0805E5C0u : 0x03005F40u;
+        const int first_phase = first_hook == 0x0805E5C0u ? 1 : 0;
+        const std::uint32_t second_hook =
+            first_hook == 0x0805E5C0u ? 0x03005F40u : 0x0805E5C0u;
+        const int second_phase = second_hook == 0x0805E5C0u ? 1 : 0;
+        (void)gba_mod_function_entry(first_hook, first_phase, &observe_cpu);
+        (void)gba_mod_function_entry(second_hook, second_phase, &observe_cpu);
+        if (!check_foreign_lease())
+            return fail("long-run transient native state returned from active Zelda session");
+    }
+    g_main_substate = 2; g_player_draw = 0x13; g_player_action = 1;
+    g_pause_player = 0; g_message_state = 0; g_priority_timer = 0;
+    g_move_locks = 0; g_player_macro = 0; g_keyinput = 0x03ff;
+    if (g_bus_write_count != writes_before_lifecycle || !same_cpu(observe_cpu, observe_before))
+        return fail("lifecycle replay wrote guest memory or CPU state");
     // Exercise the provider-restore generation bridge in both directions.
     // The active snapshot must rebuild/publish despite the controller being
     // inactive at restore time; an inactive snapshot must clear an active
@@ -414,6 +718,13 @@ int main(int argc, char** argv) {
     if (g_foreign_background || g_foreign_focus ||
         minish::foreign_world::foreign_world_native_state().zelda1_presentation_active())
         return fail("normal chord exit did not checkpoint inactive presentation lifecycle");
+    // Holding the explicit exit chord must remain inactive until a release;
+    // otherwise an apparent return can immediately re-enter on a later hook.
+    ++g_frame;
+    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
+    if (g_foreign_background || g_foreign_focus ||
+        minish::foreign_world::foreign_world_native_state().zelda1_presentation_active())
+        return fail("held explicit exit chord re-entered Zelda without a release");
     const auto writes_before_restore = g_bus_write_count;
     minish::foreign_world::foreign_world_native_state().replace_after_provider_restore(
         std::move(active_snapshot));
@@ -532,7 +843,78 @@ int main(int argc, char** argv) {
                 .zelda1_overworld_session_blob()[11] !=
             static_cast<std::uint8_t>(z1::OverworldSessionArea::kCave))
         return fail("Right cave update did not retain an immutable complete foreign frame/focus");
+    // PlayerRollUpdate's live Entity::speed/direction—not held KEYINPUT—owns
+    // foreign momentum.  Use an opposing Left input to prove the 0x300 Q8.8
+    // source sample still emits three separately collision-checked pixels.
+    const auto roll_focus_x = g_foreign_focus->destination_link_feet_x;
+    const auto roll_cpu_before = observe_cpu;
+    const auto writes_before_roll = g_bus_write_count;
+    g_player_action = z1::kMinishPlayerRollAction;
+    g_player_direction = 8; // TMC DirectionEast / LinearMove table index 8.
+    g_player_speed = 0x300;
+    g_move_locks = z1::kMinishPlayerRollingFlag;
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyLeft);
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (!g_foreign_focus ||
+        g_foreign_focus->destination_link_feet_x != roll_focus_x + 3 ||
+        !same_cpu(observe_cpu, roll_cpu_before) || g_bus_write_count != writes_before_roll)
+        return fail("source roll did not preserve 3px momentum without guest writes");
+    // The source's frame&0xf==3 phase writes speed=0.  It must remain still
+    // even with a direction held, then ordinary walking resumes cleanly when
+    // PlayerRoll terminates (including a transient action/lock change).
+    const auto stopped_roll_x = g_foreign_focus->destination_link_feet_x;
+    g_player_speed = 0;
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyRight);
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (!g_foreign_focus || g_foreign_focus->destination_link_feet_x != stopped_roll_x)
+        return fail("source zero-speed roll phase moved through foreign collision");
+    g_player_action = 1;
+    g_player_speed = 0;
+    g_move_locks = 0;
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (!g_foreign_focus || g_foreign_focus->destination_link_feet_x != stopped_roll_x + 1 ||
+        !g_foreign_background)
+        return fail("roll termination did not resume ordinary foreign walk safely");
     g_keyinput = 0x03ff;
+    // Actual-ROM source touch pickup: restore the completed start cave at
+    // Obj=($78,$98), do not press A, and let one ordinary UpdateEntities frame
+    // run the documented cave-person touch check. The persisted flag and exact
+    // Zelda1/01 InventoryCore identity must commit together without a guest
+    // write or a forged Native sword.
+    std::array<std::uint8_t, z1::Zelda1OverworldSession::kSerializedSize> sword_touch{};
+    if (!source_start_sword_touch_hotspot(argv[1], &sword_touch))
+        return fail("could not derive actual-ROM start-sword touch hotspot");
+    z1::reset_smith_yard_readiness_plugin();
+    auto& touch_native = minish::foreign_world::foreign_world_native_state();
+    touch_native.inventory() = {};
+    if (!touch_native.set_zelda1_overworld_session_blob(sword_touch, &persistence_error))
+        return fail("could not stage source start-sword touch state: " + persistence_error);
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
+    z1::activate_smith_yard_readiness_plugin();
+    for (unsigned i = 0; i < z1::SmithYardQaRoom::kActivationUpdates; ++i) {
+        ++g_frame;
+        (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    }
+    const unsigned writes_before_touch = g_bus_write_count;
+    g_keyinput = 0x03ff; // Released A remains part of this source touch replay.
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    const minish::foreign_world::CrossWorldItemId zelda_start_sword{
+        minish::foreign_world::WorldId::Zelda1, 1};
+    const auto& sword_touch_after = touch_native.zelda1_overworld_session_blob();
+    if (sword_touch_after.size() != z1::Zelda1OverworldSession::kSerializedSize ||
+        sword_touch_after[13] != 1 ||
+        touch_native.inventory().ownership(zelda_start_sword) !=
+            minish::foreign_world::OwnershipFlags::Owned ||
+        touch_native.inventory().loadout_slot(minish::foreign_world::LoadoutId::A, 0) !=
+            zelda_start_sword ||
+        touch_native.inventory().ownership({minish::foreign_world::WorldId::Native, 1}) !=
+            minish::foreign_world::OwnershipFlags::None ||
+        g_bus_write_count != writes_before_touch)
+        return fail("start-cave source touch did not atomically acquire exact Zelda1/01 sword");
     // The same per-pixel observer seam must activate decoded OW37 Level 1
     // entrances. A changed published framebuffer pointer is the plugin's
     // public proof that it switched from OW terrain to the Level-1 session.
@@ -551,17 +933,34 @@ int main(int argc, char** argv) {
         (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
     }
     const auto* overworld_pixels_before_level = g_foreign_background;
-    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~level_direction);
+    // The source fixture is one legal pixel before the exact OW37 warp. A
+    // 0x300 roll with KEYINPUT released must still enter on that first
+    // emitted pixel, proving the host did not batch/skip the entrance.
+    const auto source_direction_for_key = [](std::uint16_t key) -> std::uint8_t {
+        if (key == z1::kGbaKeyRight) return 8;
+        if (key == z1::kGbaKeyLeft) return 24;
+        if (key == z1::kGbaKeyDown) return 16;
+        return 0; // kGbaKeyUp
+    };
+    g_player_action = z1::kMinishPlayerRollAction;
+    g_player_direction = source_direction_for_key(level_direction);
+    g_player_speed = 0x300;
+    g_move_locks = z1::kMinishPlayerRollingFlag;
+    g_keyinput = 0x03ff;
     ++g_frame;
     (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
     if (!g_foreign_background || g_foreign_background == overworld_pixels_before_level)
-        return fail("KEYINPUT-only exact OW37 seam did not publish the Level-1 session");
+        return fail("3px source roll tunneled past exact OW37 Level-1 entrance");
     // Mirror the cave proof for the exact OW37 ($70,$7d) source entrance:
     // a released D-pad still takes the Level 1 doorway during CheckWarps.
     std::array<std::uint8_t, z1::Zelda1OverworldSession::kSerializedSize> level_stationary{};
     if (!source_level1_stationary_hotspot(argv[1], &level_stationary))
         return fail("could not verify the actual-ROM OW37 stationary Level-1 hotspot");
     z1::reset_smith_yard_readiness_plugin();
+    g_player_action = 1;
+    g_player_direction = 8;
+    g_player_speed = 0;
+    g_move_locks = 0;
     if (!minish::foreign_world::foreign_world_native_state()
              .set_zelda1_overworld_session_blob(level_stationary, &persistence_error))
         return fail("could not stage OW37 stationary Level-1 hotspot: " + persistence_error);
@@ -678,6 +1077,132 @@ int main(int argc, char** argv) {
             after_host_edge || g_bus_write_count != writes_before_host_edge ||
         !same_cpu(observe_cpu, host_edge_before))
         return fail("dual UpdateEntities observation duplicated the host Zelda sword hit");
+    // Native room changes, transitions, and even a dead-host sample are not
+    // foreign-world return portals. Exercise them in both hook orders: the
+    // only user-visible exit remains the explicit release-latched all-D-pad
+    // chord already covered by the provider snapshot replay above.
+    g_keyinput = 0x03ff;
+    g_transitioning_out = 1;
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (!g_foreign_background || !g_foreign_focus ||
+        !minish::foreign_world::foreign_world_native_state().zelda1_presentation_active())
+        return fail("native transition on ROM hook unexpectedly returned from Zelda");
+    g_transitioning_out = 0;
+    g_area = 2; g_room = 0; g_player_killed = 1;
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    g_transitioning_out = 1;
+    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
+    if (!g_foreign_background || !g_foreign_focus ||
+        !minish::foreign_world::foreign_world_native_state().zelda1_presentation_active())
+        return fail("native room/death/transition on IWRAM hook unexpectedly returned from Zelda");
+    g_area = 3; g_room = 1; g_player_killed = 0; g_transitioning_out = 0;
+    // A publication failure while already active freezes the last immutable
+    // Zelda frame/focus rather than clearing to native Minish. It must also
+    // remain frozen on later healthy callbacks until the explicit chord exit.
+    const auto* frozen_background = g_foreign_background;
+    const auto* frozen_focus = g_foreign_focus;
+    const unsigned writes_before_publish_fault = g_bus_write_count;
+    g_focus_publish_allowed = false;
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (g_foreign_background != frozen_background || g_foreign_focus != frozen_focus ||
+        !minish::foreign_world::foreign_world_native_state().zelda1_presentation_active() ||
+        g_bus_write_count != writes_before_publish_fault)
+        return fail("active publication failure exposed native Minish instead of freezing Zelda");
+    g_focus_publish_allowed = true;
+    ++g_frame;
+    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
+    if (g_foreign_background != frozen_background || g_foreign_focus != frozen_focus ||
+        !minish::foreign_world::foreign_world_native_state().zelda1_presentation_active() ||
+        g_bus_write_count != writes_before_publish_fault)
+        return fail("frozen Zelda session resumed mutation without explicit lifecycle boundary");
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (g_foreign_background || g_foreign_focus ||
+        minish::foreign_world::foreign_world_native_state().zelda1_presentation_active())
+        return fail("explicit chord could not leave frozen Zelda presentation");
+    z1::reset_smith_yard_readiness_plugin();
+    // Complement the rejected-second-call focus test above with a rejected
+    // first-call background test. A fresh activation is required because the
+    // source policy intentionally freezes a faulted active session until an
+    // explicit user exit/reset boundary.
+    g_background_publish_allowed = true;
+    g_focus_publish_allowed = true;
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
+    z1::activate_smith_yard_readiness_plugin();
+    for (unsigned i = 0; i < z1::SmithYardQaRoom::kActivationUpdates; ++i) {
+        ++g_frame;
+        (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    }
+    if (!g_foreign_background || !g_foreign_focus ||
+        !minish::foreign_world::foreign_world_native_state().zelda1_presentation_active())
+        return fail("background-fault fixture could not activate Zelda presentation");
+    const auto* first_call_frozen_background = g_foreign_background;
+    const auto* first_call_frozen_focus = g_foreign_focus;
+    const unsigned writes_before_background_fault = g_bus_write_count;
+    g_keyinput = 0x03ff;
+    g_background_publish_allowed = false;
+    ++g_frame;
+    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
+    if (g_foreign_background != first_call_frozen_background ||
+        g_foreign_focus != first_call_frozen_focus ||
+        !minish::foreign_world::foreign_world_native_state().zelda1_presentation_active() ||
+        g_bus_write_count != writes_before_background_fault)
+        return fail("first publication rejection exposed native Minish instead of freezing Zelda");
+    g_background_publish_allowed = true;
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (g_foreign_background != first_call_frozen_background ||
+        g_foreign_focus != first_call_frozen_focus ||
+        !minish::foreign_world::foreign_world_native_state().zelda1_presentation_active() ||
+        g_bus_write_count != writes_before_background_fault)
+        return fail("first-call frozen Zelda session resumed mutation without explicit exit");
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
+    ++g_frame;
+    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
+    if (g_foreign_background || g_foreign_focus ||
+        minish::foreign_world::foreign_world_native_state().zelda1_presentation_active())
+        return fail("explicit chord could not leave first-call-frozen Zelda presentation");
+    z1::reset_smith_yard_readiness_plugin();
+    // A provider record can be rejected after it reaches the host seam (for
+    // example, an older/corrupt external save). That is also an active-session
+    // failure, not a hidden Minish return. It freezes the prior pair and still
+    // leaves the documented chord available to the player.
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
+    z1::activate_smith_yard_readiness_plugin();
+    for (unsigned i = 0; i < z1::SmithYardQaRoom::kActivationUpdates; ++i) {
+        ++g_frame;
+        (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    }
+    g_keyinput = 0x03ff;  // Release the entering chord before testing exit.
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (!g_foreign_background || !g_foreign_focus ||
+        !minish::foreign_world::foreign_world_native_state().zelda1_presentation_active())
+        return fail("restore-fault fixture could not activate Zelda presentation");
+    const auto* restore_frozen_background = g_foreign_background;
+    const auto* restore_frozen_focus = g_foreign_focus;
+    const unsigned writes_before_restore_fault = g_bus_write_count;
+    minish::foreign_world::ForeignWorldNativeState malformed_active_snapshot;
+    malformed_active_snapshot.set_zelda1_presentation_active(true);
+    minish::foreign_world::foreign_world_native_state().replace_after_provider_restore(
+        std::move(malformed_active_snapshot));
+    ++g_frame;
+    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
+    if (g_foreign_background != restore_frozen_background ||
+        g_foreign_focus != restore_frozen_focus ||
+        !minish::foreign_world::foreign_world_native_state().zelda1_presentation_active() ||
+        g_bus_write_count != writes_before_restore_fault)
+        return fail("invalid active provider restore exposed native Minish instead of freezing Zelda");
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (g_foreign_background || g_foreign_focus ||
+        minish::foreign_world::foreign_world_native_state().zelda1_presentation_active())
+        return fail("explicit chord could not leave restore-frozen Zelda presentation");
     z1::reset_smith_yard_readiness_plugin();
     if (g_foreign_background || g_foreign_focus)
         return fail("plugin lifecycle reset did not clear foreign presentation");
