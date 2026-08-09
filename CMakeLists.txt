@@ -142,6 +142,16 @@ if(EXISTS "${MINISH_PRELOADED_MODS}/packages")
 endif()
 
 if(BUILD_TESTING)
+    add_library(minish_foreign_world_core STATIC
+        src/foreign_worlds/foreign_world.cpp)
+    target_include_directories(minish_foreign_world_core PUBLIC src)
+
+    add_executable(minish_foreign_world_test
+        tests/test_foreign_world.cpp)
+    target_link_libraries(minish_foreign_world_test PRIVATE
+        minish_foreign_world_core)
+    add_test(NAME minish_foreign_world COMMAND minish_foreign_world_test)
+
     add_executable(minish_preloaded_mods_test
         tests/test_preloaded_mods.cpp
         "${GBARECOMP_ROOT}/src/runtime/mod_runtime.cpp"
