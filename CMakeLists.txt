@@ -67,6 +67,8 @@ add_executable(MinishCapRecomp
     src/game_config.cpp
     src/minish_extended_view.cpp
     src/mods/minish_adaptive_view_plugin.cpp
+    src/mods/minish_zelda1_foreign_world_plugin.cpp
+    src/foreign_worlds/zelda1/smith_yard_readiness.cpp
     ${MINISH_GENERATED_SOURCES}
 )
 
@@ -163,17 +165,49 @@ if(BUILD_TESTING)
     add_test(NAME minish_zelda1_first_quest_data
         COMMAND minish_zelda1_first_quest_data_test)
 
+    add_library(minish_smith_yard_readiness STATIC
+        src/foreign_worlds/zelda1/smith_yard_readiness.cpp)
+    target_include_directories(minish_smith_yard_readiness PUBLIC src)
+
+    add_executable(minish_smith_yard_readiness_test
+        tests/test_smith_yard_readiness.cpp)
+    target_link_libraries(minish_smith_yard_readiness_test PRIVATE
+        minish_smith_yard_readiness)
+    add_test(NAME minish_smith_yard_readiness
+        COMMAND minish_smith_yard_readiness_test)
+
+    add_executable(minish_smith_yard_readiness_plugin_test
+        tests/test_smith_yard_readiness_plugin.cpp
+        src/foreign_worlds/zelda1/smith_yard_readiness.cpp
+        src/mods/minish_zelda1_foreign_world_plugin.cpp
+        "${GBARECOMP_ROOT}/src/runtime/mod_function_hooks.cpp")
+    target_include_directories(minish_smith_yard_readiness_plugin_test PRIVATE
+        src
+        "${GBARECOMP_ROOT}/src/runtime"
+        "${GBARECOMP_ROOT}/src/armv4t")
+    add_test(NAME minish_smith_yard_readiness_plugin
+        COMMAND minish_smith_yard_readiness_plugin_test)
+
     add_executable(minish_preloaded_mods_test
         tests/test_preloaded_mods.cpp
         "${GBARECOMP_ROOT}/src/runtime/mod_runtime.cpp"
+        "${GBARECOMP_ROOT}/src/runtime/mod_function_hooks.cpp"
+        "${GBARECOMP_ROOT}/src/runtime/asset_picker.cpp"
+        "${GBARECOMP_ROOT}/src/runtime/host_platform.cpp"
         "${GBARECOMP_ROOT}/src/gba/crc32.cpp"
-        "${GBARECOMP_ROOT}/src/gba/sha1.cpp")
+        "${GBARECOMP_ROOT}/src/gba/sha1.cpp"
+        "${GBARECOMP_ROOT}/src/gba/mod_audio.cpp")
     target_compile_definitions(minish_preloaded_mods_test PRIVATE
         GBARECOMP_MOD_UI=1)
     target_include_directories(minish_preloaded_mods_test PRIVATE
         "${GBARECOMP_ROOT}/src/runtime"
+        "${GBARECOMP_ROOT}/src/armv4t"
         "${GBARECOMP_ROOT}/src/gba"
-        "${CMAKE_CURRENT_SOURCE_DIR}/recomp-ui/src")
+        "${RECOMP_UI_ROOT}/src")
+    if(MINGW OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "MSYS")
+        target_link_libraries(minish_preloaded_mods_test PRIVATE
+            comdlg32 user32 winmm)
+    endif()
     add_test(NAME minish_preloaded_mods
         COMMAND minish_preloaded_mods_test "${MINISH_PRELOADED_MODS}")
 endif()

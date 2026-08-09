@@ -1,0 +1,33 @@
+format_version = 1
+id = "minish-cap.foreign-world.zelda1"
+version = "1.0.0"
+name = "The Legend of Zelda: First Quest Foreign World"
+author = "mstan"
+description = "Read-only Smith-yard readiness probe for an opt-in Zelda 1 First Quest foreign world."
+license = "MIT"
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "minish-cap-us"
+rom_sha1 = "b4bd50e4131b027c334547b4524e2dbbd4227130"
+
+[[feature]]
+id = "zelda1-foreign-world"
+name = "Zelda 1 Foreign World"
+description = "Validate a user-owned Zelda 1 USA PRG0 ROM and enable read-only Smith-yard readiness diagnostics."
+group = "Foreign Worlds"
+default_enabled = false
+
+[[plugin]]
+feature = "zelda1-foreign-world"
+id = "minish-cap.zelda1-foreign-world"
+
+[[asset]]
+feature = "zelda1-foreign-world"
+id = "zelda1-first-quest-prg0"
+name = "The Legend of Zelda (USA, PRG0)"
+sha1 = "dab79c84934f9aa5db4e7dad390e5d0c12443fa2"
+size = 131088
+extensions = ["nes"]
+purpose = "User-owned whole iNES image; validated before the read-only foreign-world probe is activated."

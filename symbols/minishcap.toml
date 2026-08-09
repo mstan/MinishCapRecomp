@@ -27604,6 +27604,11 @@ mode = "thumb"
 name = "UpdateEntities"
 note = "build/USA/src/entity.o"
 
+[[mod_function_hook]]
+addr = 0x0805E5C0
+mode = "thumb"
+note = "Read-only Zelda 1 Smith-yard readiness probe; always declines."
+
 [[extra_func]]
 addr = 0x0805E5F8
 mode = "thumb"

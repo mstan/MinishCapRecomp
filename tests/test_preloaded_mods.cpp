@@ -125,11 +125,11 @@ int main(int argc, char** argv) {
 
     const RecompLauncherCModProvider* provider =
         gbarecomp::mod_runtime_launcher_provider();
-    if (!provider || provider->package_count(provider->ctx) != 1 ||
-        provider->feature_count(provider->ctx) != 1 ||
+    if (!provider || provider->package_count(provider->ctx) != 2 ||
+        provider->feature_count(provider->ctx) != 2 ||
         !provider->archive_extension ||
         std::string(provider->archive_extension) != ".gbamod") {
-        return fail("catalog did not expose one package and one feature");
+        return fail("catalog did not expose two packages and two features");
     }
 
     const std::string update_manifest =
@@ -163,12 +163,43 @@ int main(int argc, char** argv) {
     }
 
     RecompLauncherCModFeature feature{};
-    if (!provider->feature_get(provider->ctx, 0, &feature) ||
-        std::string(feature.package_id) !=
-            "minish-cap.enhancement.adaptive-view" ||
-        std::string(feature.id) != "adaptive-view" ||
-        feature.enabled) {
-        return fail("adaptive view was not exposed disabled by default");
+    RecompLauncherCModFeature zelda_feature{};
+    bool found_adaptive = false;
+    bool found_zelda = false;
+    for (std::size_t index = 0; index < provider->feature_count(provider->ctx); ++index) {
+        RecompLauncherCModFeature candidate{};
+        if (!provider->feature_get(provider->ctx, index, &candidate))
+            return fail("could not inspect a preloaded feature");
+        if (std::string(candidate.package_id) ==
+                "minish-cap.enhancement.adaptive-view" &&
+            std::string(candidate.id) == "adaptive-view") {
+            feature = candidate;
+            found_adaptive = true;
+        }
+        if (std::string(candidate.package_id) ==
+                "minish-cap.foreign-world.zelda1" &&
+            std::string(candidate.id) == "zelda1-foreign-world") {
+            zelda_feature = candidate;
+            found_zelda = true;
+        }
+    }
+    if (!found_adaptive || !found_zelda || feature.enabled || zelda_feature.enabled) {
+        return fail("preloaded adaptive and Zelda 1 features were not disabled by default");
+    }
+
+    // Enabling the foreign-world feature without its exact user-owned PRG0
+    // asset must fail through the noninteractive runtime commit; it never
+    // falls back to bundled ROM data or opens a picker in this test.
+    std::string missing_asset_error;
+    if (!provider->feature_enable(provider->ctx, zelda_feature.package_id,
+                                  zelda_feature.id, 1) ||
+        gbarecomp::mod_runtime_commit({}, &missing_asset_error) ||
+        missing_asset_error.empty()) {
+        return fail("Zelda 1 feature accepted a missing required asset");
+    }
+    if (!provider->feature_enable(provider->ctx, zelda_feature.package_id,
+                                  zelda_feature.id, 0)) {
+        return fail("could not disable failed Zelda 1 feature plan");
     }
 
     if (!provider->feature_enable(
@@ -192,7 +223,8 @@ int main(int argc, char** argv) {
         return fail("disabled adaptive view did not restore native view");
 
     fs::remove_all(root, ec);
-    std::cout << "Minish Cap preloaded mod: archive install, UI provider "
-                 "toggle, and trusted adaptive-view activation passed\n";
+    std::cout << "Minish Cap preloaded mods: asset-gated Zelda 1 feature, "
+                 "archive install, UI provider toggle, and trusted "
+                 "adaptive-view activation passed\n";
     return 0;
 }
