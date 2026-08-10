@@ -29,6 +29,13 @@ set(RECOMP_UI_ROOT "${GBARECOMP_RUNTIME_UI_ROOT}"
 set(GBARECOMP_ENABLE_MODS ON CACHE BOOL
     "Enable Minish Cap's built-in mod catalog and GBA mod packages" FORCE)
 
+# Zelda 1 is an internal integration checkpoint, not a shipped Minish Cap
+# feature.  Keeping it out of the default target means an externally recreated
+# manifest cannot activate its plugin: the executable contains no Zelda 1
+# plugin or foreign-world runtime symbols unless a developer opts in here.
+option(MINISH_ENABLE_ZELDA1_FOREIGN_WORLD
+    "Build the developer-only Zelda 1 foreign-world checkpoint" OFF)
+
 # Pull in the platform core targets. This makes gbarecomp_runtime,
 # gbarecomp_debug, gbarecomp_armv4t available as link targets.
 add_subdirectory("${GBARECOMP_ROOT}" gbarecomp_build EXCLUDE_FROM_ALL)
@@ -62,13 +69,18 @@ file(GLOB MINISH_GENERATED_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/generated/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/generated/*.cpp")
 
-add_executable(MinishCapRecomp
+set(MINISH_RUNTIME_SOURCES
     src/main.cpp
     src/game_config.cpp
     src/minish_extended_view.cpp
+    src/mods/minish_adaptive_view_plugin.cpp
+    ${MINISH_GENERATED_SOURCES}
+)
+
+if(MINISH_ENABLE_ZELDA1_FOREIGN_WORLD)
+    list(APPEND MINISH_RUNTIME_SOURCES
     src/foreign_worlds/foreign_world.cpp
     src/foreign_worlds/foreign_world_native_state.cpp
-    src/mods/minish_adaptive_view_plugin.cpp
     src/mods/minish_zelda1_foreign_world_plugin.cpp
     src/foreign_worlds/zelda1/smith_yard_readiness.cpp
     src/foreign_worlds/zelda1/smith_yard_qa_room.cpp
@@ -85,8 +97,10 @@ add_executable(MinishCapRecomp
     src/foreign_worlds/zelda1/zelda1_level1_live_adapter.cpp
     src/foreign_worlds/zelda1/zelda1_cave_control.cpp
     src/foreign_worlds/zelda1/zelda1_live_frame_loader.cpp
-    ${MINISH_GENERATED_SOURCES}
-)
+    )
+endif()
+
+add_executable(MinishCapRecomp ${MINISH_RUNTIME_SOURCES})
 
 target_include_directories(MinishCapRecomp PRIVATE
     "${GBARECOMP_ROOT}/src/armv4t"
@@ -148,15 +162,31 @@ if(GBAGAME_RECOMP_UI)
     set_property(SOURCE src/main.cpp APPEND PROPERTY COMPILE_DEFINITIONS GBAGAME_RECOMP_UI)
 endif()
 
-# Ship the game-owned, disabled-by-default adaptive-view package beside the
-# executable. User-installed .gbamod archives join this same catalog.
+# Ship only the game-owned, disabled-by-default adaptive-view package beside
+# normal executables. User-installed .gbamod archives join this same catalog.
+# The Zelda checkpoint manifest lives outside this catalog and is staged only
+# by a developer build that also contains the corresponding plugin.
 set(MINISH_PRELOADED_MODS "${CMAKE_CURRENT_SOURCE_DIR}/mods/preloaded")
+set(MINISH_ZELDA1_DEVELOPER_MODS
+    "${CMAKE_CURRENT_SOURCE_DIR}/mods/developer/zelda1-foreign-world")
 if(EXISTS "${MINISH_PRELOADED_MODS}/packages")
     add_custom_command(TARGET MinishCapRecomp POST_BUILD
+        # A developer may reuse one build directory after switching the hidden
+        # checkpoint OFF. Remove only this known package so the normal catalog
+        # cannot retain a stale, unusable Zelda entry.
+        COMMAND ${CMAKE_COMMAND} -E remove_directory
+            "$<TARGET_FILE_DIR:MinishCapRecomp>/mods/packages/minish-cap.foreign-world.zelda1"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${MINISH_PRELOADED_MODS}"
             "$<TARGET_FILE_DIR:MinishCapRecomp>/mods"
         COMMENT "Preloading the Minish Cap mod catalog")
+endif()
+if(MINISH_ENABLE_ZELDA1_FOREIGN_WORLD)
+    add_custom_command(TARGET MinishCapRecomp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${MINISH_ZELDA1_DEVELOPER_MODS}"
+            "$<TARGET_FILE_DIR:MinishCapRecomp>/mods"
+        COMMENT "Staging the developer-only Zelda 1 checkpoint catalog")
 endif()
 
 if(BUILD_TESTING)
@@ -368,18 +398,29 @@ if(BUILD_TESTING)
             "${GBARECOMP_ROOT}/src/gba/sha1.cpp"
             "${GBARECOMP_ROOT}/src/gba/mod_audio.cpp")
         target_compile_definitions(minish_preloaded_mods_test PRIVATE
-            GBARECOMP_MOD_UI=1)
+            GBARECOMP_MOD_UI=1
+            MINISH_ENABLE_ZELDA1_FOREIGN_WORLD=$<BOOL:${MINISH_ENABLE_ZELDA1_FOREIGN_WORLD}>)
         target_include_directories(minish_preloaded_mods_test PRIVATE
             "${GBARECOMP_ROOT}/src/runtime"
             "${GBARECOMP_ROOT}/src/armv4t"
             "${GBARECOMP_ROOT}/src/gba"
             "${RECOMP_UI_ROOT}/src")
+        # mod_runtime's generic catalog reset path clears the engine-owned
+        # presentation seam. Link its GBA implementation even when this test
+        # is validating only the release-safe adaptive-view catalog.
+        target_link_libraries(minish_preloaded_mods_test PRIVATE gbarecomp_gba)
         if(MINGW OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "MSYS")
             target_link_libraries(minish_preloaded_mods_test PRIVATE
                 comdlg32 user32 winmm)
         endif()
-        add_test(NAME minish_preloaded_mods
-            COMMAND minish_preloaded_mods_test "${MINISH_PRELOADED_MODS}")
+        if(MINISH_ENABLE_ZELDA1_FOREIGN_WORLD)
+            add_test(NAME minish_preloaded_mods
+                COMMAND minish_preloaded_mods_test "${MINISH_PRELOADED_MODS}"
+                    "${MINISH_ZELDA1_DEVELOPER_MODS}")
+        else()
+            add_test(NAME minish_preloaded_mods
+                COMMAND minish_preloaded_mods_test "${MINISH_PRELOADED_MODS}")
+        endif()
     endif()
 endif()
 

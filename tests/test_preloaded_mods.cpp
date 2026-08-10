@@ -100,7 +100,11 @@ bool write_stored_package(const fs::path& path,
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 2) return fail("expected the preloaded mods root");
+#if MINISH_ENABLE_ZELDA1_FOREIGN_WORLD
+    if (argc != 3) return fail("expected the release and developer catalog roots");
+#else
+    if (argc != 2) return fail("expected the release catalog root");
+#endif
 
     const auto nonce = std::chrono::steady_clock::now()
                            .time_since_epoch().count();
@@ -109,6 +113,11 @@ int main(int argc, char** argv) {
     std::error_code ec;
     fs::copy(argv[1], root, fs::copy_options::recursive, ec);
     if (ec) return fail("could not stage catalog: " + ec.message());
+#if MINISH_ENABLE_ZELDA1_FOREIGN_WORLD
+    ec.clear();
+    fs::copy(argv[2], root, fs::copy_options::recursive, ec);
+    if (ec) return fail("could not stage developer catalog: " + ec.message());
+#endif
 
     if (!gba_mod_register_reset_callback(reset_view) ||
         !gba_mod_register_activation_plugin(
@@ -125,11 +134,17 @@ int main(int argc, char** argv) {
 
     const RecompLauncherCModProvider* provider =
         gbarecomp::mod_runtime_launcher_provider();
-    if (!provider || provider->package_count(provider->ctx) != 2 ||
-        provider->feature_count(provider->ctx) != 2 ||
+    constexpr std::size_t kExpectedCatalogEntries =
+#if MINISH_ENABLE_ZELDA1_FOREIGN_WORLD
+        2;
+#else
+        1;
+#endif
+    if (!provider || provider->package_count(provider->ctx) != kExpectedCatalogEntries ||
+        provider->feature_count(provider->ctx) != kExpectedCatalogEntries ||
         !provider->archive_extension ||
         std::string(provider->archive_extension) != ".gbamod") {
-        return fail("catalog did not expose two packages and two features");
+        return fail("catalog exposed an unexpected package or feature count");
     }
 
     const std::string update_manifest =
@@ -163,9 +178,11 @@ int main(int argc, char** argv) {
     }
 
     RecompLauncherCModFeature feature{};
-    RecompLauncherCModFeature zelda_feature{};
     bool found_adaptive = false;
+#if MINISH_ENABLE_ZELDA1_FOREIGN_WORLD
+    RecompLauncherCModFeature zelda_feature{};
     bool found_zelda = false;
+#endif
     for (std::size_t index = 0; index < provider->feature_count(provider->ctx); ++index) {
         RecompLauncherCModFeature candidate{};
         if (!provider->feature_get(provider->ctx, index, &candidate))
@@ -176,17 +193,23 @@ int main(int argc, char** argv) {
             feature = candidate;
             found_adaptive = true;
         }
+#if MINISH_ENABLE_ZELDA1_FOREIGN_WORLD
         if (std::string(candidate.package_id) ==
                 "minish-cap.foreign-world.zelda1" &&
             std::string(candidate.id) == "zelda1-foreign-world") {
             zelda_feature = candidate;
             found_zelda = true;
         }
+#endif
     }
-    if (!found_adaptive || !found_zelda || feature.enabled || zelda_feature.enabled) {
-        return fail("preloaded adaptive and Zelda 1 features were not disabled by default");
+    if (!found_adaptive || feature.enabled) {
+        return fail("release catalog did not expose exactly disabled adaptive view");
     }
 
+#if MINISH_ENABLE_ZELDA1_FOREIGN_WORLD
+    if (!found_zelda || zelda_feature.enabled) {
+        return fail("developer catalog did not expose disabled Zelda 1 feature");
+    }
     // Enabling the foreign-world feature without its exact user-owned PRG0
     // asset must fail through the noninteractive runtime commit; it never
     // falls back to bundled ROM data or opens a picker in this test.
@@ -201,6 +224,7 @@ int main(int argc, char** argv) {
                                   zelda_feature.id, 0)) {
         return fail("could not disable failed Zelda 1 feature plan");
     }
+#endif
 
     if (!provider->feature_enable(
             provider->ctx, feature.package_id, feature.id, 1) ||
@@ -223,8 +247,7 @@ int main(int argc, char** argv) {
         return fail("disabled adaptive view did not restore native view");
 
     fs::remove_all(root, ec);
-    std::cout << "Minish Cap preloaded mods: asset-gated Zelda 1 feature, "
-                 "archive install, UI provider toggle, and trusted "
-                 "adaptive-view activation passed\n";
+    std::cout << "Minish Cap preloaded mods: release catalog, archive install, "
+                 "UI provider toggle, and trusted adaptive-view activation passed\n";
     return 0;
 }

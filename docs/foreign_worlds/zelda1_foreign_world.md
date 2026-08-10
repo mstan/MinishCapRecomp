@@ -1,5 +1,13 @@
 # Zelda 1 foreign world: implemented QA-slice contracts
 
+> **Hidden checkpoint:** This design is developer-only. Normal
+> `MinishCapRecomp` builds ship neither the Zelda plugin/runtime nor its
+> manifest. `-DMINISH_ENABLE_ZELDA1_FOREIGN_WORLD=ON` is required to build the
+> checkpoint, which accepts only the user-supplied canonical Zelda 1 USA PRG0
+> iNES SHA-1 `dab79c84934f9aa5db4e7dad390e5d0c12443fa2` and extracts directly
+> in memory. No ROM or derived content ships; persistent Falcon-style cache
+> staging remains future work and is not a checkpoint dependency.
+
 ## Scope and boundary
 
 The first sections define the durable, game-owned foreign-world seam for

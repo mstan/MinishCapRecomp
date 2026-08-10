@@ -11,7 +11,7 @@ DLLs). The zip contains: MinishCapRecomp.exe (Release, MinGW, stripped) + the
 four runtime DLLs (SDL2.dll, libgcc_s_seh-1.dll, libstdc++-6.dll,
 libwinpthread-1.dll) + assets\ (the recomp-ui pre-boot launcher's fonts +
 image TGAs, staged next to the exe by recomp_target_launcher_ui's POST_BUILD)
-+ mods\ (the disabled-by-default built-in feature catalog) + README.md.
++ mods\ (the release-safe Adaptive Widescreen catalog) + README.md.
 
 (Supersedes the older package_release.ps1, which built a static standalone exe;
 this matches the dynamic + bundled-DLL layout shipped for every other GBA game.)
@@ -57,10 +57,16 @@ if (-not (Test-Path (Join-Path $build 'CMakeCache.txt'))) {
       -DCMAKE_MAKE_PROGRAM="$MingwBin/ninja.exe" `
       -DCMAKE_BUILD_TYPE=Release "-DCMAKE_CXX_FLAGS_RELEASE=-O1 -DNDEBUG" `
       -DGBARECOMP_BUILD_ORACLE=OFF `
+      -DMINISH_ENABLE_ZELDA1_FOREIGN_WORLD=OFF `
       -DGBARECOMP_MINGW_PREFIX_UNIX="/c/msys64/mingw64" `
       -DSDL2_INCLUDE_DIR="C:/msys64/mingw64/include/SDL2" `
       -DSDL2_LIBRARY="C:/msys64/mingw64/lib/libSDL2.dll.a"
   if ($LASTEXITCODE -ne 0) { throw "configure failed ($LASTEXITCODE)" }
+}
+$hiddenGate = Select-String -Path (Join-Path $build 'CMakeCache.txt') `
+    -SimpleMatch 'MINISH_ENABLE_ZELDA1_FOREIGN_WORLD:BOOL=OFF' | Select-Object -First 1
+if (-not $hiddenGate) {
+  throw 'release build must configure MINISH_ENABLE_ZELDA1_FOREIGN_WORLD=OFF'
 }
 
 foreach ($g in $games) {
@@ -89,10 +95,17 @@ foreach ($g in $games) {
   }
   Copy-Item $assets -Destination $stage -Recurse
 
-  # Built-in packages share the exact layout used by installed .gbamod files.
+  # The release-safe catalog contains only Adaptive Widescreen. The hidden
+  # Zelda 1 checkpoint is staged exclusively by an explicit developer build.
   $mods = Join-Path $build 'mods'
   if (-not (Test-Path (Join-Path $mods 'packages'))) {
     throw "preloaded mod catalog missing: $mods"
+  }
+  $zeldaManifest = Get-ChildItem (Join-Path $mods 'packages') -Recurse `
+      -File -Filter 'manifest.toml' | Select-String -SimpleMatch `
+      'id = "minish-cap.foreign-world.zelda1"' | Select-Object -First 1
+  if ($zeldaManifest) {
+    throw "release catalog must not contain the hidden Zelda 1 checkpoint: $($zeldaManifest.Path)"
   }
   Copy-Item $mods -Destination $stage -Recurse
 

@@ -104,10 +104,23 @@ triggers, other screen-space effects, and the hardware OAM limit retain original
 behavior, so they can pop in or assume the 240-pixel viewport. Disable the mod
 to return to faithful presentation.
 
-## Zelda 1 foreign-world QA room
+## Zelda 1 foreign-world hidden checkpoint
 
-The disabled-by-default **Zelda 1 Foreign World** package requires and
-hash-validates a user-owned Zelda 1 USA PRG0 iNES image before its trusted
+This is a **developer-only hidden checkpoint**, not a player-facing feature.
+Release builds and release catalogs contain neither the Zelda manifest nor its
+plugin/foreign-world runtime, so recreating or installing a manifest cannot
+activate it. Developers must explicitly configure
+`-DMINISH_ENABLE_ZELDA1_FOREIGN_WORLD=ON` to stage the separate checkpoint.
+
+That build requires the user's exact 131,088-byte **The Legend of Zelda (USA,
+PRG0)** iNES image, SHA-1 `dab79c84934f9aa5db4e7dad390e5d0c12443fa2`. The
+runtime fails closed before direct, bounded in-memory extraction—like the
+Samus approach—and no ROM or derived Zelda content is shipped. A persistent
+Falcon-style extracted-asset cache remains future work and is not required for
+this hidden checkpoint.
+
+The disabled-by-default developer **Zelda 1 Foreign World** package requires and
+hash-validates that user-owned Zelda 1 USA PRG0 iNES image before its trusted
 plugin can run. The current entrance is the visible rift in the white-flower
 patch left of Link's house in South Hyrule Field (area 3, room 1). Walk onto it
 to enter; no action button is required. It arms only after a safe outside
