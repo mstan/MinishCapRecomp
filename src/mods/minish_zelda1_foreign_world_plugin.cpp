@@ -94,12 +94,6 @@ std::array<GbaForeignScreenOverlay, 2> g_native_portal_overlays{};
 unsigned g_next_native_portal_overlay = 0;
 bool g_native_portal_published_frame_seen = false;
 std::uint32_t g_last_native_portal_published_frame = 0;
-// The relocated IWRAM UpdateEntities phase can observe a source A press after
-// its ROM-side input/body work already changed `Entity.action`. Retain exactly
-// one previously *visible, fully-ready* portal frame so that this late phase
-// cannot eat the interaction edge.
-bool g_native_portal_interaction_lease_seen = false;
-std::uint32_t g_last_native_portal_interaction_lease_frame = 0;
 bool g_asset_available = false;
 bool g_qa_video_active = false;
 bool g_foreign_menu_suspended = false;
@@ -143,10 +137,6 @@ std::int16_t read_guest_s16(std::uint32_t address) {
 
 void clear_native_portal_overlay() {
     gba_mod_clear_foreign_screen_overlay();
-}
-
-void clear_native_portal_interaction_lease() {
-    g_native_portal_interaction_lease_seen = false;
 }
 
 bool publish_native_portal_overlay(std::uint32_t source_frame,
@@ -288,7 +278,6 @@ void enter_qa_video() {
     // committing a Zelda background; the PPU also suppresses it defensively
     // while a foreign background exists.
     clear_native_portal_overlay();
-    clear_native_portal_interaction_lease();
     g_obj_focus.reset();
     g_cave_a_edge.reset();
     g_combat_a_edge.reset();
@@ -323,7 +312,6 @@ void leave_qa_video(bool reset_trigger) {
     // latch until the user releases, preventing a held chord from reentering.
     if (reset_trigger) g_qa_room.reset();
     g_native_portal.reset();
-    clear_native_portal_interaction_lease();
     g_combat_frame_seen = false;
     g_locomotion_frame_seen = false;
     g_presentation_restore_pending = false;
@@ -353,11 +341,9 @@ int observe_init_pause_menu(std::uint32_t, int, ArmCpuState*) {
     // This hook applies to both native and foreign menus. A cached field portal
     // must not sit over the pause menu while GameMain skips UpdateEntities.
     clear_native_portal_overlay();
-    clear_native_portal_interaction_lease();
     // A held A while native menu input owns the game must not become an
     // immediate portal interaction at the first post-menu UpdateEntities.
     g_native_portal.reset();
-    clear_native_portal_interaction_lease();
     if (!g_asset_available || g_foreign_menu_suspended || !g_qa_room.active() ||
         !g_qa_video_active || !g_overworld_session.loaded())
         return 0;
@@ -402,7 +388,6 @@ bool apply_pending_native_restore() {
     g_combat_a_edge.reset();
     g_foreign_combat.reset();
     g_native_portal.reset();
-    clear_native_portal_interaction_lease();
     g_host_sword_swing.reset();
     g_combat_frame_seen = false;
     g_locomotion_frame_seen = false;
@@ -671,8 +656,9 @@ void tick_foreign_locomotion_once(std::uint16_t keyinput) {
         freeze_active_foreign_session();
         return;
     }
-    if (g_qa_room.active() && g_qa_video_active && !publish_current_foreign_video())
+    if (g_qa_room.active() && g_qa_video_active && !publish_current_foreign_video()) {
         freeze_active_foreign_session();
+    }
 }
 
 int observe_update_entities(std::uint32_t, int, ArmCpuState*) {
@@ -765,11 +751,10 @@ int observe_update_entities(std::uint32_t, int, ArmCpuState*) {
             normal_player_ready ? NormalControlGate::VerifiedNormal
                                      : NormalControlGate::Unknown,
         });
-        // Entry requires the whole source-mapped normal-control gate and a
-        // source-world proximity + released-then-A interaction. The portal
-        // controller observes both callback phases so a press caught in a
-        // transient first phase remains available to its stable peer without
-        // ever allowing duplicate entry.
+        // Entry requires the whole source-mapped normal-control gate and an
+        // outside-to-inside contact crossing. The controller observes both
+        // relocated callback phases; a late phase that only lacks normal
+        // control must not erase an arm from its stable peer.
         // Once active, transient native state can never dismiss the session.
         // The active-world lease survives every native action/lifecycle
         // sample. This foreign world has no implicit safety exit: only the
@@ -806,39 +791,19 @@ int observe_update_entities(std::uint32_t, int, ArmCpuState*) {
             qa_event = g_qa_room.update(survival_safe, keyinput);
         } else {
             const bool entry_ready = g_portal_tracker.state().ready();
-            // A valid native portal shown on the immediately preceding source
-            // frame grants one interaction lease. A normal A press can change
-            // `Entity.action`/move control before this observer runs; accept
-            // only that narrow relaxation. Area, room, main-subtask,
-            // transition, life/draw, message, macro and cutscene gates remain
-            // mandatory, so a stale overlay cannot enter from a menu or warp.
-            const bool interaction_safe =
-                portal_input.verified_zelda1_asset && portal_input.area == 3 &&
-                portal_input.room == 1 && portal_input.game_main_update &&
-                !portal_input.room_transitioning_out &&
+            const bool portal_hard_safe = portal_input.verified_zelda1_asset &&
+                portal_input.area == 3 && portal_input.room == 1 &&
+                portal_input.game_main_update && !portal_input.room_transitioning_out &&
                 portal_input.player_entity_alive && portal_input.player_entity_drawn &&
                 !portal_input.script_or_cutscene_locked;
-            if (g_native_portal_interaction_lease_seen &&
-                frame != g_last_native_portal_interaction_lease_frame &&
-                frame != g_last_native_portal_interaction_lease_frame + 1u)
-                clear_native_portal_interaction_lease();
-            // Strict readiness already admits an A edge observed in this
-            // source frame. The relaxed lease is intentionally *prior-frame
-            // only*, so a transient callback can never create and consume it
-            // in the same source frame.
-            const bool lease_current = g_native_portal_interaction_lease_seen &&
-                frame == g_last_native_portal_interaction_lease_frame + 1u;
-            if (!interaction_safe)
-                clear_native_portal_interaction_lease();
-            const bool entry_interactive = entry_ready || (interaction_safe && lease_current);
             const auto portal_event = g_native_portal.observe({
-                entry_interactive,
+                entry_ready,
+                portal_hard_safe,
                 frame,
                 read_guest_s16(kPlayerFeetX),
                 read_guest_s16(kPlayerFeetY),
                 read_guest_s16(kRoomControlsOriginX),
                 read_guest_s16(kRoomControlsOriginY),
-                keyinput,
             });
             if (entry_ready) {
                 if (publish_native_portal_overlay(
@@ -846,8 +811,6 @@ int observe_update_entities(std::uint32_t, int, ArmCpuState*) {
                         read_guest_s16(kRoomControlsOriginY))) {
                     g_native_portal_published_frame_seen = true;
                     g_last_native_portal_published_frame = frame;
-                    g_native_portal_interaction_lease_seen = true;
-                    g_last_native_portal_interaction_lease_frame = frame;
                 }
             } else if (!g_native_portal_published_frame_seen ||
                        g_last_native_portal_published_frame != frame) {
@@ -892,8 +855,8 @@ int observe_update_entities(std::uint32_t, int, ArmCpuState*) {
 // Remove the native-only compositor layer at that precise boundary: it has no
 // guest side effects and the next eligible room observation may republish it.
 int observe_exit_transition(std::uint32_t, int, ArmCpuState*) {
+    g_native_portal.reset();
     clear_native_portal_overlay();
-    clear_native_portal_interaction_lease();
     return 0;
 }
 
@@ -927,7 +890,6 @@ void reset_smith_yard_readiness_plugin() {
     g_native_portal_overlays = {};
     g_next_native_portal_overlay = 0;
     g_native_portal_published_frame_seen = false;
-    clear_native_portal_interaction_lease();
     // A reset recreates the bus/PPU before the mod callback is invoked, so
     // restoring old VRAM here would be invalid.  The next session begins
     // inactive; normal exit is handled by leave_qa_video().
@@ -982,7 +944,6 @@ void activate_smith_yard_readiness_plugin() {
     g_native_portal_overlays = {};
     g_next_native_portal_overlay = 0;
     g_native_portal_published_frame_seen = false;
-    clear_native_portal_interaction_lease();
     clear_native_portal_overlay();
     g_lifecycle_frame_seen = false;
     g_foreign_session_frozen = false;

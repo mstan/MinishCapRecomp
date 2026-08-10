@@ -14,13 +14,12 @@ int fail(const std::string& message) {
     return 1;
 }
 
-z1::MinishPortalInput input(std::uint32_t frame, std::uint16_t keyinput,
-                            bool ready = true,
+z1::MinishPortalInput input(std::uint32_t frame, bool ready = true,
                             std::int16_t x = z1::kMinishPortalAnchorLocalX,
                             std::int16_t y = z1::kMinishPortalAnchorLocalY,
                             std::int16_t origin_x = 0,
                             std::int16_t origin_y = 0) {
-    return {ready, frame, x, y, origin_x, origin_y, keyinput};
+    return {ready, true, frame, x, y, origin_x, origin_y};
 }
 
 }  // namespace
@@ -34,7 +33,7 @@ int main() {
         return fail("source-world portal did not project through RoomControls scroll");
     if (!z1::minish_portal_contains(0x250, 0x1b8, 0, 0) ||
         // F0 playtest geometry: Link's feet can visibly touch the rift from
-        // 23px below its bottom anchor and must still be able to press A.
+        // 23px below its bottom anchor and must trigger contact entry.
         !z1::minish_portal_contains(0x250, 0x1cf, 0, 0) ||
         !z1::minish_portal_contains(0x268, 0x18c, 0, 0) ||
         z1::minish_portal_contains(0x269, 0x1b8, 0, 0) ||
@@ -60,40 +59,38 @@ int main() {
         return fail("open-yard portal interaction overlaps Link's House transition");
 
     z1::MinishForeignPortalController controller;
-    // A held A at activation is intentionally inert until a release happens.
-    if (controller.observe(input(1, 0x03fe)) != z1::MinishPortalEvent::None ||
-        controller.observe(input(2, 0x03fe)) != z1::MinishPortalEvent::None)
-        return fail("held A entered before the required release");
-    if (controller.observe(input(3, 0x03ff)) != z1::MinishPortalEvent::None ||
-        controller.observe(input(4, 0x03fe)) != z1::MinishPortalEvent::Entered)
-        return fail("released-then-A did not enter the exact portal interaction zone");
-    if (controller.observe(input(4, 0x03fe)) != z1::MinishPortalEvent::None)
-        return fail("duplicate ready phase entered portal twice");
-
+    // Starting inside is inert: an outside sample is needed after a
+    // load/menu/transition before contact can enter.
+    if (controller.observe(input(1, true, 0x250, 0x1cf)) != z1::MinishPortalEvent::None ||
+        controller.observe(input(2, true, 0x250, 0x1cf)) != z1::MinishPortalEvent::None)
+        return fail("portal appearing beneath Link auto-entered without a crossing");
+    if (controller.observe(input(3, true, 0x269, 0x1cf)) != z1::MinishPortalEvent::None ||
+        controller.observe(input(4, true, 0x250, 0x1cf)) != z1::MinishPortalEvent::Entered)
+        return fail("safe outside-to-inside portal contact did not enter");
+    if (controller.observe(input(4, true, 0x250, 0x1cf)) != z1::MinishPortalEvent::None)
+        return fail("duplicate ROM/IWRAM contact callbacks entered twice");
     controller.reset();
-    if (controller.observe(input(5, 0x03ff, true, 0x250, 0x1cf)) !=
-            z1::MinishPortalEvent::None ||
-        controller.observe(input(6, 0x03fe, true, 0x250, 0x1cf)) !=
-            z1::MinishPortalEvent::Entered)
-        return fail("F0 visible-touch approach offset could not enter the portal");
-
+    if (controller.observe(input(10, true, 0x269, 0x1cf)) != z1::MinishPortalEvent::None ||
+        controller.observe(input(11, false, 0x250, 0x1cf)) != z1::MinishPortalEvent::None ||
+        controller.observe(input(12, true, 0x269, 0x1cf)) != z1::MinishPortalEvent::None ||
+        controller.observe(input(13, true, 0x250, 0x1cf)) != z1::MinishPortalEvent::Entered)
+        return fail("unsafe portal frame did not require a later safe contact crossing");
     controller.reset();
-    (void)controller.observe(input(10, 0x03ff));
-    if (controller.observe(input(11, 0x03fe, true, 0x269, 0x1b8)) !=
-        z1::MinishPortalEvent::None)
-        return fail("A outside the native portal entered Zelda");
-    // A press sampled by an unready ROM phase is retained for a later ready
-    // IWRAM phase of the same source frame, but not across source frames.
-    if (controller.observe(input(12, 0x03ff)) != z1::MinishPortalEvent::None ||
-        controller.observe(input(13, 0x03fe, false)) != z1::MinishPortalEvent::None ||
-        controller.observe(input(13, 0x03fe, true)) != z1::MinishPortalEvent::Entered)
-        return fail("ready second hook lost the same-frame released-then-A portal edge");
-
+    if (controller.observe(input(20, true, 0x269, 0x1cf)) != z1::MinishPortalEvent::None)
+        return fail("outside contact fixture did not arm");
+    auto late_phase = input(21, false, 0x250, 0x1cf);
+    late_phase.hard_safe = true;
+    if (controller.observe(late_phase) != z1::MinishPortalEvent::None ||
+        controller.observe(input(22, true, 0x250, 0x1cf)) != z1::MinishPortalEvent::Entered)
+        return fail("late normal-control phase erased a valid contact crossing arm");
     controller.reset();
-    (void)controller.observe(input(20, 0x03ff));
-    for (std::uint32_t frame = 21; frame != 61; ++frame)
-        if (controller.observe(input(frame, 0x030f)) != z1::MinishPortalEvent::None)
-            return fail("all-Dpad chord remained an inactive portal entry path");
+    if (controller.observe(input(30, true, 0x269, 0x1cf)) != z1::MinishPortalEvent::None)
+        return fail("hard-gate fixture did not arm");
+    auto lifecycle_boundary = input(31, false, 0x250, 0x1cf);
+    lifecycle_boundary.hard_safe = false;
+    if (controller.observe(lifecycle_boundary) != z1::MinishPortalEvent::None ||
+        controller.observe(input(32, true, 0x250, 0x1cf)) != z1::MinishPortalEvent::None)
+        return fail("hard lifecycle gate failed to revoke a portal contact arm");
 
     z1::MinishForeignPortalRenderer renderer;
     const auto* first = renderer.next(0x200, 0x100, 0, 0, 0);

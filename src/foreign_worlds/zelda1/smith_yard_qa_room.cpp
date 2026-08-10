@@ -101,8 +101,8 @@ QaRoomEvent SmithYardQaRoom::update(bool survival_safe, std::uint16_t keyinput) 
 
 void SmithYardQaRoom::enter() {
     active_ = true;
-    // A portal A edge can coincide with all four D-pad buttons. Require a
-    // release before that pre-existing chord is allowed to act as exit.
+    // Contact entry can occur while a direction is held. Require a complete
+    // release before the pre-existing all-D-pad chord may act as an exit.
     chord_latched_ = true;
     held_updates_ = 0;
 }

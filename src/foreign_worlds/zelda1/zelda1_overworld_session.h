@@ -590,11 +590,31 @@ public:
     using namespace minish::foreign_world;
     const CrossWorldItemId sword{WorldId::Zelda1, 0x01};
     const ItemTraits traits{1, sword, ItemUseKind::Equip,
-                            ResourcePoolProvenance::None};
+                             ResourcePoolProvenance::None};
     minish::foreign_world::InventoryCore inventory_candidate = *inventory;
-    if (!inventory_candidate.acquire_item(sword, OwnershipFlags::Owned,
-                                          Capability::Sword, traits, error))
+    // A foreign-session restore and InventoryCore have independent durable
+    // lifetimes.  A save made after this source gift can therefore contain
+    // Zelda1/01 even when an older/reconstructed Z1OS cave says the source
+    // still exists.  Treat that precise, compatible record as an idempotent
+    // reconciliation: keep its origin and traits, make its existing source
+    // pickup disappear, and keep the item usable.  Do not paper over an
+    // identity collision -- a same-ID record with different traits or
+    // capabilities is corrupt/conflicting state and must leave both stores
+    // unchanged.
+    const auto existing_ownership = inventory_candidate.ownership(sword);
+    const bool already_owned = has_flag(existing_ownership, OwnershipFlags::Owned);
+    if (already_owned) {
+      const auto existing_capabilities = inventory_candidate.capabilities(sword);
+      const auto existing_traits = inventory_candidate.traits(sword);
+      if (!existing_capabilities || !existing_traits ||
+          *existing_capabilities != Capability::Sword || *existing_traits != traits) {
+        set_error(error, "existing Zelda1 start sword conflicts with source traits");
+        return OverworldSessionSwordResult::kInventoryRejected;
+      }
+    } else if (!inventory_candidate.acquire_item(sword, OwnershipFlags::Owned,
+                                                  Capability::Sword, traits, error)) {
       return OverworldSessionSwordResult::kInventoryRejected;
+    }
     // The cave source grants this exact Zelda-origin record.  It never
     // replaces an already selected compatible sword (including Native); when
     // none is selected, make the new record immediately usable in the first
@@ -1082,7 +1102,13 @@ private:
       if (horizontal) source_position_.obj_x = proposed;
       else source_position_.obj_y = proposed;
       grid_offset_ = static_cast<std::int8_t>(grid_offset_ + direction);
-      if (grid_offset_ == 8 || grid_offset_ == -8) {
+      // A reversal can walk the signed in-progress displacement back to the
+      // preceding grid point. That is just as terminal as reaching the
+      // forward point at +/-8: the host's active-segment token has no segment
+      // at offset zero and Z1OS persists that canonical None value. This is
+      // not raw source ObjDir/facing, which may legitimately retain its last
+      // direction after Link_EndMove.
+      if (grid_offset_ == 0 || grid_offset_ == 8 || grid_offset_ == -8) {
         grid_offset_ = 0;
         walk_direction_ = OverworldWalkDirection::kNone;
       }

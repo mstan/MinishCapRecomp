@@ -19,7 +19,8 @@ inline constexpr std::uint16_t kMinishPortalHeight = 40;
 // (0x238..0x268, 0x18c..0x1d0), safely outside the source house-warp rectangle
 // (0x282..0x29e, 0x182..0x18e). The visible rift occupies x +/-16 and y -40..0;
 // this intentional approach rectangle gives Link 24px below/alongside it to
-// press A without turning its invisible bottom anchor into a precision test.
+// walk onto the rift without turning its invisible bottom anchor into a
+// precision test.
 // The live plugin derives its absolute world
 // point by adding gRoomControls.origin_x/y before comparing with Entity x/y.
 inline constexpr std::int16_t kMinishPortalAnchorLocalX = 0x250;
@@ -59,19 +60,23 @@ enum class MinishPortalEvent : std::uint8_t { None, Entered };
 
 struct MinishPortalInput {
     bool entry_ready{};
+    // A lifecycle boundary (wrong room, transition, menu/cutscene, dead or
+    // hidden player) revokes a pending outside sample.  A merely late
+    // ROM/IWRAM phase may lack normal-control readiness without being a
+    // boundary, so it must not erase a valid crossing arm.
+    bool hard_safe{};
     std::uint32_t source_frame{};
     std::int16_t player_world_x{};
     std::int16_t player_world_y{};
     std::int16_t room_origin_x{};
     std::int16_t room_origin_y{};
-    std::uint16_t keyinput = 0x03ff;
 };
 
-// Owns only the native-world A interaction. The caller must feed every
-// inactive ROM/IWRAM observation: an A edge captured in a transient first
-// phase remains available to a later fully-ready phase of the same source
-// frame, while duplicate ready phases cannot enter twice. A release after any
-// reset/restore is mandatory before an A press can enter.
+// Owns only native-world contact entry. The caller feeds every inactive
+// ROM/IWRAM observation. A portal never auto-enters merely because it appears
+// beneath Link after a load/menu/transition: one fully-safe outside sample
+// arms it, then a later inside sample enters once. Duplicate callbacks cannot
+// enter twice in one source frame.
 class MinishForeignPortalController {
 public:
     [[nodiscard]] MinishPortalEvent observe(const MinishPortalInput& input);
@@ -80,10 +85,8 @@ public:
 private:
     bool frame_seen_ = false;
     std::uint32_t last_frame_{};
-    bool a_released_ = false;
-    bool a_was_held_ = false;
-    bool a_edge_this_frame_ = false;
     bool entry_consumed_this_frame_ = false;
+    bool contact_armed_ = false;
 };
 
 // Data-only frame accepted by the engine screen-overlay adapter. `alpha_q4`

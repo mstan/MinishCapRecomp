@@ -467,6 +467,15 @@ bool can_prove_midcell_turn_lock(z1::Zelda1OverworldSession* session) {
     }
     if (!staged) return false;
     const auto start = session->source_position();
+    const auto staged_state = session->serialize();
+    // Z1OS must reject the noncanonical form that previously escaped the
+    // live walker: zero displacement with an active-segment Right token.
+    auto malformed_zero_segment = staged_state;
+    malformed_zero_segment[17] = 0;
+    malformed_zero_segment[20] = static_cast<std::uint8_t>(
+        z1::OverworldWalkDirection::kRight);
+    if (z1::Zelda1OverworldSession::validate_serialized(malformed_zero_segment))
+        return false;
     // A release preserves phase. Z_05 allows an opposite direction to walk
     // back to the preceding point; an early perpendicular request performs
     // that same reversal before it can turn on the new axis.
@@ -478,8 +487,37 @@ bool can_prove_midcell_turn_lock(z1::Zelda1OverworldSession* session) {
     const auto mid_segment = session->serialize();
     if (!session->restore(mid_segment) ||
         session->move_by(-1, 0) != z1::OverworldSessionMoveResult::kMoved ||
-        session->source_position().obj_x != start.obj_x)
+        session->source_position().obj_x != start.obj_x ||
+        !z1::Zelda1OverworldSession::validate_serialized(session->serialize()) ||
+        !session->restore(session->serialize()))
         return false;
+    // Every partial Right/Down displacement proven safe by the staged source
+    // probes above must round-trip after its opposite Left/Up reversal. This
+    // is the exact persistence seam exercised by the live plugin when a
+    // player alternates D-pad directions between callbacks. Do not initiate
+    // unproven Left/Up probes from this fixture merely to make the matrix look
+    // symmetric: their input is already covered as the reversal leg.
+    for (int axis = 0; axis != 2; ++axis) {
+        for (int distance = 1; distance != 8; ++distance) {
+            if (!session->restore(staged_state)) return false;
+            const auto delta_x = static_cast<std::int16_t>(axis == 0 ? 1 : 0);
+            const auto delta_y = static_cast<std::int16_t>(axis == 1 ? 1 : 0);
+            bool moved = true;
+            for (int i = 0; i != distance; ++i)
+                moved = moved && session->move_by(delta_x, delta_y) ==
+                    z1::OverworldSessionMoveResult::kMoved;
+            for (int i = 0; i != distance; ++i)
+                moved = moved && session->move_by(-delta_x, -delta_y) ==
+                    z1::OverworldSessionMoveResult::kMoved;
+            const auto checkpoint = session->serialize();
+            if (!moved || !z1::Zelda1OverworldSession::validate_serialized(checkpoint) ||
+                !session->restore(checkpoint) ||
+                session->source_position().obj_x != start.obj_x ||
+                session->source_position().obj_y != start.obj_y)
+                return false;
+        }
+    }
+    if (!session->restore(staged_state)) return false;
     if (session->move_by(1, 0) != z1::OverworldSessionMoveResult::kMoved ||
         session->move_by(0, 1) != z1::OverworldSessionMoveResult::kMoved ||
         session->source_position().obj_x != start.obj_x ||
@@ -794,6 +832,43 @@ int test_actual_ines_path(const char* path) {
         sword_use->use_kind != minish::foreign_world::ItemUseKind::Equip ||
         sword_use->resource_pool != minish::foreign_world::ResourcePoolProvenance::None)
         return fail("starting sword did not preserve explicit cross-world use semantics");
+    // InventoryCore and the Z1OS cave source are independently persisted.  A
+    // prior exact Zelda1/01 acquisition must reconcile a reconstructed cave
+    // which still displays the source sword: touching it removes that source
+    // presentation without replacing or mutating the already selected item.
+    z1::Zelda1OverworldSession reconciled_session;
+    if (!reconciled_session.load_hash_validated_ines(path,
+                                                     z1::Zelda1OverworldSession::kInitialRoom,
+                                                   &error) ||
+        !reconciled_session.restore(cave_entry_state, &error) ||
+        !reconciled_session.acknowledge_cave_dialogue() ||
+        reconciled_session.move_cave_by(0, static_cast<std::int16_t>(0x98 - 0xad)) !=
+            z1::StartCaveMoveResult::kMoved ||
+        reconciled_session.move_cave_by(0x78 - 0x70, 0) !=
+            z1::StartCaveMoveResult::kMoved)
+        return fail("could not construct persisted-start-sword reconciliation fixture: " + error);
+    minish::foreign_world::InventoryCore reconciled_inventory;
+    if (!reconciled_inventory.set_item(wooden_sword,
+                                       minish::foreign_world::OwnershipFlags::Owned,
+                                       minish::foreign_world::Capability::Sword,
+                                       {1, wooden_sword,
+                                        minish::foreign_world::ItemUseKind::Equip,
+                                        minish::foreign_world::ResourcePoolProvenance::None},
+                                       &error) ||
+        !reconciled_inventory.set_loadout_slot(minish::foreign_world::LoadoutId::A, 2,
+                                               wooden_sword, &error))
+        return fail("could not seed persisted exact Zelda1/01 inventory: " + error);
+    const auto reconciled_inventory_before = reconciled_inventory.serialize();
+    if (reconciled_session.try_take_start_sword(&reconciled_inventory, &error) !=
+            z1::OverworldSessionSwordResult::kAcquired ||
+        !reconciled_session.start_sword_acquired() ||
+        reconciled_inventory.serialize() != reconciled_inventory_before ||
+        reconciled_inventory.resolve_loadout_use(minish::foreign_world::LoadoutId::A, 2) !=
+            std::optional<minish::foreign_world::ResolvedItemUse>{
+                {wooden_sword, wooden_sword,
+                 minish::foreign_world::ItemUseKind::Equip,
+                 minish::foreign_world::ResourcePoolProvenance::None}})
+        return fail("persisted exact Zelda1/01 did not reconcile the cave source atomically: " + error);
     // A source cave pickup must never replace an already selected compatible
     // Native sword; ownership of Zelda1/01 remains an independent record.
     z1::Zelda1OverworldSession preserve_session;

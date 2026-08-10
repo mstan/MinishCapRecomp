@@ -390,14 +390,12 @@ extern "C" void bus_write_u16(std::uint32_t, std::uint16_t) { ++g_bus_write_coun
 
 bool enter_portal(ArmCpuState* cpu) {
     if (!cpu) return false;
-    // Match the approved F0 playtest: feet meet the visible rift from 23px
-    // below its artwork/bottom anchor, rather than requiring a hidden centre.
+    // Contact entry deliberately requires an outside->inside crossing so a
+    // portal that appears beneath Link after load/menu/transition is inert.
     g_player_feet_x = static_cast<std::int16_t>(g_room_origin_x +
-                                                z1::kMinishPortalAnchorLocalX);
+                                                z1::kMinishPortalAnchorLocalX + 25);
     g_player_feet_y = static_cast<std::int16_t>(g_room_origin_y +
                                                 z1::kMinishPortalAnchorLocalY + 23);
-    // First source frame arms the release gate and visibly publishes the native
-    // portal. The next new A press is the only native-world entry action.
     g_keyinput = 0x03ff;
     ++g_frame;
     (void)gba_mod_function_entry(0x0805E5C0u, 1, cpu);
@@ -406,7 +404,11 @@ bool enter_portal(ArmCpuState* cpu) {
         g_foreign_overlay->width != z1::kMinishPortalWidth ||
         g_foreign_overlay->height != z1::kMinishPortalHeight)
         return false;
-    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
+    // Match the approved F0 playtest's visible-touch position. No A input is
+    // needed: crossing into the approach rectangle enters immediately.
+    g_player_feet_x = static_cast<std::int16_t>(g_room_origin_x +
+                                                z1::kMinishPortalAnchorLocalX);
+    g_keyinput = 0x03ff;
     ++g_frame;
     (void)gba_mod_function_entry(0x0805E5C0u, 1, cpu);
     return g_foreign_background && g_foreign_focus && !g_foreign_overlay;
@@ -461,252 +463,47 @@ int main(int argc, char** argv) {
         g_pause_player = 0; g_message_state = 0; g_priority_timer = 0;
         g_move_locks = 0; g_player_macro = 0;
     };
-    /* The two observed UpdateEntities entries can expose different native
-    // phases for one gRoomTransition.frameCount. A transient ROM phase must
-    // not consume the source-frame activation heartbeat before the IWRAM
-    // phase satisfies every documented portal predicate. Conversely, this is
-    // still exactly 18 *frames*, not 36 callbacks.
-    for (unsigned i = 0; i < z1::SmithYardQaRoom::kActivationUpdates; ++i) {
-        ++g_frame;
-        g_main_substate = 0; g_player_draw = 0; g_player_action = 4;
-        g_pause_player = 0x80; g_message_state = 1; g_priority_timer = 1;
-        g_move_locks = 0x22189B75u; g_player_macro = 1;
-        if (gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu) != 0)
-            return fail("read-only UpdateEntities observer unexpectedly replaced guest control");
-        if (g_foreign_background || g_foreign_focus)
-            return fail("unready ROM phase entered Zelda before its ready IWRAM peer");
-        g_main_substate = 2; g_player_draw = 0x13; g_player_action = 1;
-        g_pause_player = 0; g_message_state = 0; g_priority_timer = 0;
-        g_move_locks = 0; g_player_macro = 0;
-        if (gba_mod_function_entry(0x03005F40u, 0, &observe_cpu) != 0)
-            return fail("read-only IWRAM UpdateEntities observer unexpectedly replaced guest control");
-        if (i + 1 < z1::SmithYardQaRoom::kActivationUpdates &&
-            (g_foreign_background || g_foreign_focus))
-            return fail("duplicate hook callbacks shortened source-frame portal activation");
-    }
-    if (observe_cpu.R[15] != observe_before.R[15] || !g_foreign_background || !g_foreign_focus ||
-        g_bus_write_count != writes_before_phase_order_entry ||
-        g_foreign_focus->destination_link_feet_x != 128 ||
-        g_foreign_focus->destination_link_feet_y != 101)
-        return fail("later ready IWRAM phase did not publish OW exactly on source activation frame");
-    const auto make_unready_phase = [] {
-        g_main_substate = 0; g_player_draw = 0; g_player_action = 4;
-        g_pause_player = 0x80; g_message_state = 1; g_priority_timer = 1;
-        g_move_locks = 0x22189B75u; g_player_macro = 1;
-    };
-    const auto make_ready_phase = [] {
-        g_main_substate = 2; g_player_draw = 0x13; g_player_action = 1;
-        g_pause_player = 0; g_message_state = 0; g_priority_timer = 0;
-        g_move_locks = 0; g_player_macro = 0;
-    };
-    // Leave that first active lease, then release only during an unready
-    // inactive phase. The release must clear the exit latch without becoming
-    // an entry heartbeat. Mirror the source phase order afterward: IWRAM
-    // transient first, ROM ready second, for exactly 18 source frames.
+    // Portal visibility alone must not enter when it appears beneath Link.
     g_keyinput = 0x03ff;
-    make_unready_phase();
     ++g_frame;
-    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
-    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
-    make_ready_phase();
-    ++g_frame;
-    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    if (g_foreign_background || g_foreign_focus ||
-        minish::foreign_world::foreign_world_native_state().zelda1_presentation_active())
-        return fail("explicit chord did not leave the first phase-order Zelda lease");
-    g_keyinput = 0x03ff;
-    make_unready_phase();
-    ++g_frame;
-    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
-    for (unsigned i = 0; i < z1::SmithYardQaRoom::kActivationUpdates; ++i) {
-        g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
-        make_unready_phase();
-        ++g_frame;
-        (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
-        if (g_foreign_background || g_foreign_focus)
-            return fail("unready IWRAM phase re-entered Zelda before its ready ROM peer");
-        make_ready_phase();
-        (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-        if (i + 1 < z1::SmithYardQaRoom::kActivationUpdates &&
-            (g_foreign_background || g_foreign_focus))
-            return fail("ready ROM second phase shortened source-frame portal activation");
-    }
-    if (!g_foreign_background || !g_foreign_focus)
-        return fail("ready ROM phase did not enter Zelda after 18 mirrored source frames");
-    // A partial source-ready hold must be discarded by a later unready
-    // release; otherwise the next portal attempt inherits stale heartbeats.
-    g_keyinput = 0x03ff;
-    make_ready_phase();
-    ++g_frame;
-    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
-    ++g_frame;
-    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    if (g_foreign_background || g_foreign_focus)
-        return fail("second explicit chord did not leave Zelda before partial-hold replay");
-    g_keyinput = 0x03ff;
-    make_unready_phase();
-    ++g_frame;
-    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
-    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
-    make_ready_phase();
-    for (unsigned i = 0; i != 5; ++i) {
-        ++g_frame;
-        (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    }
-    g_keyinput = 0x03ff;
-    make_unready_phase();
-    ++g_frame;
-    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
-    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
-    make_ready_phase();
-    for (unsigned i = 0; i < z1::SmithYardQaRoom::kActivationUpdates; ++i) {
-        ++g_frame;
-        (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-        if (i + 1 < z1::SmithYardQaRoom::kActivationUpdates &&
-            (g_foreign_background || g_foreign_focus))
-            return fail("unready release failed to discard the partial portal hold");
-    }
-    if (!g_foreign_background || !g_foreign_focus)
-        return fail("full ready hold after unready release could not re-enter Zelda"); */
-    // A held A never enters after activation until a released sample has
-    // armed the native portal. The ROM/IWRAM duplicate hook order may differ
-    // within one source frame, so let the transient hook see release and the
-    // stable peer consume the press.
-    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
-    make_unready_phase();
-    ++g_frame;
-    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    make_ready_phase();
-    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
-    if (g_foreign_background || g_foreign_focus || !g_foreign_overlay)
-        return fail("held A bypassed portal release gate or native portal was not rendered");
-    make_unready_phase();
     (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
     if (!g_foreign_overlay || g_foreign_background || g_foreign_focus)
-        return fail("unready second hook incorrectly erased same-frame native portal");
-    g_keyinput = 0x03ff;
-    make_unready_phase();
-    ++g_frame;
-    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
-    if (g_foreign_overlay)
-        return fail("portal remained visible through an unready source phase");
-    make_ready_phase();
-    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
-    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    if (observe_cpu.R[15] != observe_before.R[15] || !g_foreign_background || !g_foreign_focus ||
-        g_foreign_overlay || g_bus_write_count != writes_before_phase_order_entry)
-        return fail("released-then-A portal interaction did not enter read-only");
-    // The retired all-Dpad route remains an explicit exit only. After exit,
-    // holding every direction outside/inside the portal never re-enters.
-    g_keyinput = 0x03ff;
+        return fail("contact portal auto-entered instead of waiting for a crossing");
+    if (!enter_portal(&observe_cpu))
+        return fail("safe outside-to-inside contact did not enter Zelda");
+    // Entry must not need a pause/menu round-trip before the very next held
+    // D-pad sample moves the virtual Zelda player.
+    const auto contact_entry_focus = *g_foreign_focus;
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyLeft);
     ++g_frame;
     (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kQaChord);
-    ++g_frame;
-    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    if (g_foreign_background || g_foreign_focus)
-        return fail("all-Dpad did not remain the explicit active-world exit");
-    for (unsigned i = 0; i != 2; ++i) {
+    if (!g_foreign_focus ||
+        g_foreign_focus->destination_link_feet_x !=
+            static_cast<std::int16_t>(contact_entry_focus.destination_link_feet_x - 1))
+        return fail("immediate post-contact D-pad movement froze without a pause");
+    // Sustained varied input must remain live without relying on a native
+    // pause/unpause recovery. This also catches a latent frozen lease because
+    // every source frame has an exact expected one-pixel result.
+    const unsigned writes_before_contact_walk = g_bus_write_count;
+    for (unsigned i = 0; i != 16; ++i) {
+        const auto* previous_focus = g_foreign_focus;
+        const bool move_right = (i & 1u) == 0;
+        g_keyinput = static_cast<std::uint16_t>(0x03ff &
+            ~(move_right ? z1::kGbaKeyRight : z1::kGbaKeyLeft));
         ++g_frame;
         (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-        if (g_foreign_background || g_foreign_focus)
-            return fail("all-Dpad incorrectly re-entered Zelda while inactive");
+        if (!g_foreign_focus || !g_foreign_background ||
+            g_foreign_focus == previous_focus ||
+            !minish::foreign_world::foreign_world_native_state().zelda1_presentation_active())
+            return fail("sustained varied post-contact movement froze at step " +
+                        std::to_string(i) + " focus=" +
+                        (g_foreign_focus ? "yes" : "no") + " same=" +
+                        (g_foreign_focus == previous_focus ? "yes" : "no") +
+                        " bg=" + (g_foreign_background ? "yes" : "no"));
     }
-    if (!g_foreign_overlay)
-        return fail("inactive ready world stopped rendering the native portal");
-    const unsigned writes_before_transition = g_bus_write_count;
-    (void)gba_mod_function_entry(0x08080840u, 1, &observe_cpu);
-    if (g_foreign_overlay || g_bus_write_count != writes_before_transition)
-        return fail("DoExitTransition did not clear only the native portal overlay");
-    // A transition deliberately revokes the visible-frame lease. An A press
-    // that changed native action/control cannot resurrect that cleared portal.
-    g_player_action = 4; g_move_locks = 1;
-    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
-    ++g_frame;
-    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    if (g_foreign_background || g_foreign_focus)
-        return fail("transition-cleared portal lease entered on action-changed A press");
-    // Re-establish a fully-ready visible frame, then confirm InitPauseMenu
-    // also revokes that lease before native menu/action input can enter.
-    make_ready_phase();
+    if (g_bus_write_count != writes_before_contact_walk)
+        return fail("sustained post-contact movement wrote guest memory");
     g_keyinput = 0x03ff;
-    ++g_frame;
-    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    if (!g_foreign_overlay)
-        return fail("ready frame did not restore native portal after transition test");
-    (void)gba_mod_function_entry(0x080A4D88u, 1, &observe_cpu);
-    g_player_action = 4; g_move_locks = 1;
-    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
-    ++g_frame;
-    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    if (g_foreign_background || g_foreign_focus)
-        return fail("menu-cleared portal lease entered on action-changed A press");
-    const auto restore_visible_portal = [&]() {
-        make_ready_phase();
-        g_keyinput = 0x03ff;
-        ++g_frame;
-        (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-        return g_foreign_overlay != nullptr && !g_foreign_background && !g_foreign_focus;
-    };
-    // A lease never weakens a hard source gate. Each fixture starts with a
-    // strictly visible portal, then presses A only after the listed hard gate
-    // changed. This covers the exact transient-action pathway adversarially.
-    if (!restore_visible_portal()) return fail("wrong-room gate lacked visible portal fixture");
-    g_room = 2; g_player_action = 4; g_move_locks = 1;
-    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
-    ++g_frame; (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    if (g_foreign_background || g_foreign_focus)
-        return fail("wrong room bypassed the portal interaction lease");
-    g_room = 1;
-    if (!restore_visible_portal()) return fail("dead gate lacked visible portal fixture");
-    g_player_killed = 1; g_player_action = 4; g_move_locks = 1;
-    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
-    ++g_frame; (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    if (g_foreign_background || g_foreign_focus)
-        return fail("dead Link bypassed the portal interaction lease");
-    g_player_killed = 0;
-    if (!restore_visible_portal()) return fail("hidden gate lacked visible portal fixture");
-    g_player_draw = 0; g_player_action = 4; g_move_locks = 1;
-    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
-    ++g_frame; (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    if (g_foreign_background || g_foreign_focus)
-        return fail("hidden Link bypassed the portal interaction lease");
-    g_player_draw = 0x13;
-    if (!restore_visible_portal()) return fail("message gate lacked visible portal fixture");
-    g_message_state = 1; g_player_action = 4; g_move_locks = 1;
-    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
-    ++g_frame; (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    if (g_foreign_background || g_foreign_focus)
-        return fail("message/cutscene state bypassed the portal interaction lease");
-    g_message_state = 0;
-    // A released F+1 consumes no interaction; an action-changed A at F+2 is
-    // stale and must not re-use the F portal publication.
-    if (!restore_visible_portal()) return fail("stale-lease fixture lacked visible portal");
-    g_player_action = 4; g_move_locks = 1; g_keyinput = 0x03ff;
-    ++g_frame; (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
-    ++g_frame; (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    if (g_foreign_background || g_foreign_focus)
-        return fail("F+2 stale portal lease entered on transient action A press");
-    // This is the live-user case: a previously visible, fully ready portal
-    // may consume the next A edge even when that edge changed action/control.
-    if (!restore_visible_portal())
-        return fail("lease fixture could not publish the native portal");
-    g_player_action = 4; g_move_locks = 1;
-    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
-    ++g_frame;
-    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
-    if (!g_foreign_background || !g_foreign_focus || g_foreign_overlay ||
-        g_bus_write_count != writes_before_transition)
-        return fail("visible portal lease did not consume action-changed A edge read-only");
-    const auto* lease_entry_background = g_foreign_background;
-    const auto* lease_entry_focus = g_foreign_focus;
-    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
-    if (g_foreign_background != lease_entry_background ||
-        g_foreign_focus != lease_entry_focus)
-        return fail("dual UpdateEntities callbacks entered the portal lease twice");
-    make_ready_phase();
     // TMC player.c:CheckInitPauseMenu calls InitPauseMenu only after validating
     // a new Start press and normal control. The exact InitPauseMenu hook must
     // therefore suspend the foreign PPU pair without treating raw/rejected
@@ -1098,6 +895,44 @@ int main(int argc, char** argv) {
             minish::foreign_world::OwnershipFlags::None ||
         g_bus_write_count != writes_before_touch)
         return fail("start-cave source touch did not atomically acquire exact Zelda1/01 sword");
+    // Re-enter from the same visible source cave state while the durable
+    // exact Zelda1/01 record already exists.  This is the live save/restart
+    // seam: Z1OS must reconcile the stale source pickup, retain the selected
+    // origin-qualified sword, and never write Minish guest state.
+    z1::reset_smith_yard_readiness_plugin();
+    touch_native.inventory() = {};
+    const minish::foreign_world::ItemTraits zelda_start_sword_traits{
+        1, zelda_start_sword, minish::foreign_world::ItemUseKind::Equip,
+        minish::foreign_world::ResourcePoolProvenance::None};
+    if (!touch_native.inventory().set_item(
+            zelda_start_sword, minish::foreign_world::OwnershipFlags::Owned,
+            minish::foreign_world::Capability::Sword, zelda_start_sword_traits,
+            &persistence_error) ||
+        !touch_native.inventory().set_loadout_slot(
+            minish::foreign_world::LoadoutId::A, 2, zelda_start_sword,
+            &persistence_error) ||
+        !touch_native.set_zelda1_overworld_session_blob(sword_touch, &persistence_error))
+        return fail("could not stage persisted Zelda1/01 cave reconciliation: " +
+                    persistence_error);
+    const auto persisted_sword_inventory_before = touch_native.inventory().serialize();
+    g_keyinput = 0x03ff;
+    z1::activate_smith_yard_readiness_plugin();
+    if (!enter_portal(&observe_cpu))
+        return fail("persisted Zelda1/01 cave fixture could not enter through native portal");
+    const unsigned writes_before_persisted_sword_touch = g_bus_write_count;
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    const auto& persisted_sword_touch_after = touch_native.zelda1_overworld_session_blob();
+    const auto persisted_sword_use = touch_native.inventory().resolve_loadout_use(
+        minish::foreign_world::LoadoutId::A, 2);
+    if (persisted_sword_touch_after.size() != z1::Zelda1OverworldSession::kSerializedSize ||
+        persisted_sword_touch_after[13] != 1 ||
+        touch_native.inventory().serialize() != persisted_sword_inventory_before ||
+        !persisted_sword_use || persisted_sword_use->acquired_id != zelda_start_sword ||
+        persisted_sword_use->behavior_id != zelda_start_sword ||
+        persisted_sword_use->use_kind != minish::foreign_world::ItemUseKind::Equip ||
+        g_bus_write_count != writes_before_persisted_sword_touch)
+        return fail("persisted exact Zelda1/01 did not reconcile the source cave read-only");
     // The same per-pixel observer seam must activate decoded OW37 Level 1
     // entrances. A changed published framebuffer pointer is the plugin's
     // public proof that it switched from OW terrain to the Level-1 session.

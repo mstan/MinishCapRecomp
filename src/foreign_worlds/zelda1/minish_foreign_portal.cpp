@@ -13,8 +13,6 @@ constexpr std::uint16_t kPortalCyan = bgr(16, 29, 31);
 constexpr std::uint16_t kPortalViolet = bgr(26, 9, 28);
 constexpr std::uint16_t kPortalWhite = bgr(31, 31, 31);
 
-constexpr std::uint16_t kGbaKeyA = 1u << 0;
-
 }  // namespace
 
 MinishPortalWorldPosition minish_portal_world_position(std::int16_t room_origin_x,
@@ -53,35 +51,34 @@ MinishPortalEvent MinishForeignPortalController::observe(
     if (!frame_seen_ || last_frame_ != input.source_frame) {
         frame_seen_ = true;
         last_frame_ = input.source_frame;
-        a_edge_this_frame_ = false;
         entry_consumed_this_frame_ = false;
     }
 
-    const bool a_held = (input.keyinput & kGbaKeyA) == 0;
-    if (!a_held) {
-        a_released_ = true;
-    } else if (a_released_ && !a_was_held_) {
-        a_edge_this_frame_ = true;
+    if (!input.hard_safe) {
+        contact_armed_ = false;
+        return MinishPortalEvent::None;
     }
-    a_was_held_ = a_held;
-
-    if (entry_consumed_this_frame_ || !input.entry_ready ||
-        !minish_portal_contains(input.player_world_x, input.player_world_y,
-                                input.room_origin_x, input.room_origin_y) ||
-        !a_edge_this_frame_)
+    if (!input.entry_ready) return MinishPortalEvent::None;
+    const bool inside = minish_portal_contains(
+        input.player_world_x, input.player_world_y,
+        input.room_origin_x, input.room_origin_y);
+    if (!inside) {
+        contact_armed_ = true;
+        return MinishPortalEvent::None;
+    }
+    if (entry_consumed_this_frame_ || !contact_armed_)
         return MinishPortalEvent::None;
 
     entry_consumed_this_frame_ = true;
+    contact_armed_ = false;
     return MinishPortalEvent::Entered;
 }
 
 void MinishForeignPortalController::reset() {
     frame_seen_ = false;
     last_frame_ = 0;
-    a_released_ = false;
-    a_was_held_ = false;
-    a_edge_this_frame_ = false;
     entry_consumed_this_frame_ = false;
+    contact_armed_ = false;
 }
 
 const MinishForeignPortalFrame* MinishForeignPortalRenderer::next(
