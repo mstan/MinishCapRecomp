@@ -177,24 +177,65 @@ int main() {
 
   // A selected Zelda sword has no Minish ItemSword to animate, so its
   // compositor-only strike must provide clear, bounded feedback without
-  // changing the immutable room framebuffer.  The visual is deliberately
-  // original host geometry rather than a copied Zelda/TMC sprite.
+  // changing the immutable room framebuffer. The visual is original host
+  // geometry rather than a copied Zelda/TMC sprite, but has a readable
+  // Minish-inspired wind-up, full slash, and recovery in every direction.
   z1::HostSwordSwingPresentation swing;
   z1::OwFramebuffer background{};
   const auto* base = background.data();
+  const auto immutable_background = background;
+  const std::array<z1::ForeignSwordFacing, 4> facings{
+      z1::ForeignSwordFacing::kNorth, z1::ForeignSwordFacing::kEast,
+      z1::ForeignSwordFacing::kSouth, z1::ForeignSwordFacing::kWest};
+  std::array<z1::OwFramebuffer, facings.size()> windups{};
+  for (std::size_t facing_index = 0; facing_index < facings.size(); ++facing_index) {
+    swing.begin(facings[facing_index]);
+    std::array<z1::OwFramebuffer, z1::HostSwordSwingPresentation::kVisibleFrames>
+        frames{};
+    for (unsigned frame = 0; frame < z1::HostSwordSwingPresentation::kVisibleFrames;
+         ++frame) {
+      const auto* strike = swing.compose(base, 100, 100);
+      const auto changed = std::count_if(
+          strike, strike + background.size(),
+          [](std::uint16_t pixel) { return pixel != 0; });
+      const auto expected_phase = frame < 2
+          ? z1::HostSwordSwingPresentation::Phase::kWindup
+          : frame < 6 ? z1::HostSwordSwingPresentation::Phase::kStrike
+                      : z1::HostSwordSwingPresentation::Phase::kRecovery;
+      if (!strike || strike == base || changed < 20 || !swing.active() ||
+          swing.frames_remaining() !=
+              z1::HostSwordSwingPresentation::kVisibleFrames - frame ||
+          swing.phase() != expected_phase || background != immutable_background)
+        return fail("host Zelda sword phase was not isolated, readable, or timed correctly");
+      std::copy_n(strike, frames[frame].size(), frames[frame].begin());
+      swing.advance();
+    }
+    if (frames[0] == frames[2] || frames[2] == frames[3] ||
+        frames[3] == frames[6] || frames[6] == frames[8])
+      return fail("host Zelda sword wind-up, extension, and recovery were not distinct");
+    windups[facing_index] = frames[0];
+  }
+  if (windups[0] == windups[1] || windups[1] == windups[2] ||
+      windups[2] == windups[3])
+    return fail("host Zelda sword did not preserve distinct all-direction silhouettes");
+  if (swing.active() || swing.compose(base, 100, 100) != base ||
+      background != immutable_background)
+    return fail("host Zelda sword did not expire without changing terrain");
+
+  // A new press replaces a partly-complete presentation; a lifecycle reset
+  // removes it without touching the source terrain. This is important when a
+  // foreign room opens a native pause menu or restores a checkpoint.
   swing.begin(z1::ForeignSwordFacing::kEast);
-  const auto* strike = swing.compose(base, 100, 100);
-  const auto changed = std::count_if(strike, strike + background.size(),
-                                     [](std::uint16_t pixel) { return pixel != 0; });
-  if (!strike || strike == base || changed < 8 || !swing.active() ||
-      swing.frames_remaining() != z1::HostSwordSwingPresentation::kVisibleFrames ||
-      std::any_of(background.begin(), background.end(),
-                  [](std::uint16_t pixel) { return pixel != 0; }))
-    return fail("host Zelda sword strike did not render as an isolated transient layer");
-  for (unsigned frame = 0; frame < z1::HostSwordSwingPresentation::kVisibleFrames;
-       ++frame)
-    swing.advance();
-  if (swing.active() || swing.compose(base, 100, 100) != base)
-    return fail("host Zelda sword strike did not expire without changing terrain");
+  (void)swing.compose(base, 100, 100);
+  swing.advance();
+  swing.begin(z1::ForeignSwordFacing::kWest);
+  if (swing.facing() != z1::ForeignSwordFacing::kWest ||
+      swing.phase() != z1::HostSwordSwingPresentation::Phase::kWindup ||
+      swing.compose(base, 100, 100) == base || background != immutable_background)
+    return fail("host Zelda sword could not retrigger from a clean wind-up");
+  swing.reset();
+  if (swing.active() || swing.compose(base, 100, 100) != base ||
+      background != immutable_background)
+    return fail("host Zelda sword reset mutated or retained foreign presentation");
   return 0;
 }

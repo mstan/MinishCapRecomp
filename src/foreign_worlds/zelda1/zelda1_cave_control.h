@@ -92,7 +92,12 @@ class Zelda1StartCaveControl {
   // (frame=0,counter=6) boundary and then follows the exact update cadence.
   static constexpr std::uint8_t kStandingFireFramesPerPhase = 6;
 
-  bool load(const FirstQuestData& data);
+  // `start_sword_taken` is the exact persistent room-item fact read by
+  // Z_01:InitCave.  Once set, InitCave destroys the person and unhalts Link
+  // instead of initializing selector-zero text; the two standing fires still
+  // exist.  Keep that distinction in the control state so a later cave
+  // entry cannot replay the one-time Old Man message.
+  bool load(const FirstQuestData& data, bool start_sword_taken = false);
 
   [[nodiscard]] bool loaded() const { return loaded_; }
   [[nodiscard]] bool entering() const { return entering_; }

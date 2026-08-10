@@ -212,6 +212,11 @@ int test_actual(const char* path) {
       !different_rectangle(before_dialogue, fire_phase_one, 0xa8 - 8, 0x80 - 72, 16, 16) ||
       same_rectangle(before_dialogue, sword_taken, 0x78 - 8, 0x80 - 72, 16, 16) ||
       same_rectangle(before_dialogue, sword_taken, 0x78 + 4 - 8, 0x98 - 72, 8, 16) ||
+      // A taken persisted room item makes InitCave call UnhaltLink without
+      // setting up selector-zero text. Re-entry is a blank cave, rather than
+      // a completed one-time message left in the nametable.
+      !same_rectangle(before_dialogue, sword_taken, 24, 32, 208, 8) ||
+      !same_rectangle(before_dialogue, sword_taken, 24, 40, 208, 8) ||
       // `$21A4`/`$21C4` become crop-space Y=32/40. `$E4` is not used by
       // this source record, so row 48 must not acquire a third line.
       !different_rectangle(before_dialogue, dialogue_complete, 24, 32, 208, 8) ||
@@ -321,6 +326,22 @@ int test_actual(const char* path) {
       return fail("source cave bottom throat no longer reaches its exit edge");
   if (control.move_one(z1::CaveDirection::kDown) != z1::StartCaveMoveResult::kExited)
     return fail("source cave exit was not recognized at exact Y=$dd");
+  // Z_01:InitCave observes its persistent room item flag before setting up
+  // cave text. The next entry still has the normal entry transition and
+  // animated fires, but Link is immediately unhalted after it settles.
+  if (!control.load(*data, true) || !control.entering() ||
+      !control.dialogue_acknowledged() || !control.start_sword_taken() ||
+      !control.settle_entry() || control.tick_dialogue() ||
+      control.start_sword_eligibility() != z1::StartCaveSwordEligibility::kAlreadyTaken ||
+      control.move_one(z1::CaveDirection::kDown) != z1::StartCaveMoveResult::kMoved)
+    return fail("taken start-sword cave re-entry replayed dialogue or blocked Link");
+  const auto reentry_fire_before = control.standing_fire_animation_frame();
+  for (unsigned frame = 0;
+       frame != z1::Zelda1StartCaveControl::kStandingFireFramesPerPhase;
+       ++frame)
+    if (!control.tick_standing_fire()) return fail("taken-cave fires stopped animating");
+  if (control.standing_fire_animation_frame() == reentry_fire_before)
+    return fail("taken-cave fires did not retain source animation cadence");
   return 0;
 }
 }  // namespace

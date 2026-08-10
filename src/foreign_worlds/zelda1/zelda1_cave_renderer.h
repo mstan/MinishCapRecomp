@@ -310,32 +310,37 @@ render_first_quest_start_cave(const FirstQuestData &data,
             false, sword_palette))
       return false;
   }
-  FirstQuestStartCaveDialogueFacts dialogue{};
-  if (!get_first_quest_start_cave_dialogue(data, &dialogue)) return false;
-  const unsigned wanted_glyphs = state.dialogue_complete
-      ? dialogue.visible_glyph_count
-      : std::min<unsigned>(state.visible_dialogue_characters,
-                           dialogue.visible_glyph_count);
+  // Z_01:InitCave returns through UnhaltLink as soon as its persistent room
+  // item bit is set.  It does not initialize the person/text record, so a
+  // re-entry after the wooden sword has no retained or replayed message.
+  if (!state.sword_acquired) {
+    FirstQuestStartCaveDialogueFacts dialogue{};
+    if (!get_first_quest_start_cave_dialogue(data, &dialogue)) return false;
+    const unsigned wanted_glyphs = state.dialogue_complete
+        ? dialogue.visible_glyph_count
+        : std::min<unsigned>(state.visible_dialogue_characters,
+                             dialogue.visible_glyph_count);
   // Render the exact source transfer sequence. `$25` advances the VRAM cursor
   // but is immediately skipped by UpdatePersonState_Textbox; ordinary `$24`
   // is a timed, written background tile. A high-bit marker takes effect only
   // after its glyph has been transferred.
-  std::uint8_t vram_low = 0xa4;
-  unsigned rendered_glyphs = 0;
-  const auto text_patterns = prg.subspan(34687, 0x700);
-  for (const std::uint8_t encoded : dialogue.encoded) {
-    const std::uint8_t glyph = encoded & 0x3f;
-    const std::uint8_t destination = vram_low++;
-    if (glyph == 0x25) continue;
-    if (rendered_glyphs >= wanted_glyphs) break;
-    detail::draw_cave_text_tile(out, text_patterns, glyph, destination, pal,
-                                textbox_palette);
-    ++rendered_glyphs;
-    const std::uint8_t marker = encoded & 0xc0;
-    if (marker == 0) continue;
-    const unsigned line_index = marker == 0xc0 ? 2 : marker == 0x40 ? 1 : 0;
-    vram_low = dialogue.line_starts[line_index];
-    if (marker == 0xc0) break;
+    std::uint8_t vram_low = 0xa4;
+    unsigned rendered_glyphs = 0;
+    const auto text_patterns = prg.subspan(34687, 0x700);
+    for (const std::uint8_t encoded : dialogue.encoded) {
+      const std::uint8_t glyph = encoded & 0x3f;
+      const std::uint8_t destination = vram_low++;
+      if (glyph == 0x25) continue;
+      if (rendered_glyphs >= wanted_glyphs) break;
+      detail::draw_cave_text_tile(out, text_patterns, glyph, destination, pal,
+                                  textbox_palette);
+      ++rendered_glyphs;
+      const std::uint8_t marker = encoded & 0xc0;
+      if (marker == 0) continue;
+      const unsigned line_index = marker == 0xc0 ? 2 : marker == 0x40 ? 1 : 0;
+      vram_low = dialogue.line_starts[line_index];
+      if (marker == 0xc0) break;
+    }
   }
   if (facts) {
     FirstQuestStartCaveFacts candidate{};

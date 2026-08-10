@@ -2,6 +2,7 @@
 #include "foreign_worlds/zelda1/smith_yard_qa_room.h"
 #include "foreign_worlds/zelda1/minish_linear_move_adapter.h"
 #include "foreign_worlds/zelda1/minish_foreign_portal.h"
+#include "foreign_worlds/zelda1/minish_host_sword_swing.h"
 #include "foreign_worlds/zelda1/zelda1_overworld_session.h"
 #include "foreign_worlds/zelda1/zelda1_level1_live_adapter.h"
 #include "foreign_worlds/foreign_world_native_state.h"
@@ -13,6 +14,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 #include <algorithm>
 #include <array>
 #include <iostream>
@@ -39,6 +41,7 @@ std::uint32_t g_frame = 0;
 std::uint8_t g_active_item_behavior = 0, g_active_item_priority = 0;
 std::uint8_t g_active_item_animation = 0, g_player_sword_state = 0;
 std::uint8_t g_player_attack_status = 0, g_player_animation_state = 0;
+std::uint16_t g_player_animation = 0;
 std::uint16_t g_player_sprite_vram_offset = 0x160;
 std::int16_t g_player_feet_x = z1::kMinishPortalAnchorLocalX;
 std::int16_t g_player_feet_y = z1::kMinishPortalAnchorLocalY;
@@ -49,6 +52,7 @@ std::int16_t g_room_scroll_x = 0x1f2, g_room_scroll_y = 0x156;
 unsigned g_bus_write_count = 0;
 bool g_background_publish_allowed = true;
 bool g_focus_publish_allowed = true;
+unsigned g_focus_rejections_remaining = 0;
 
 int fail(const std::string& message) {
     std::cerr << "FAIL: " << message << "\n";
@@ -323,6 +327,10 @@ extern "C" int gba_mod_publish_foreign_obj_focus(
     if (!g_focus_publish_allowed ||
         std::string(plugin_id) != z1::kZelda1ForeignWorldPluginId || !focus)
         return 0;
+    if (g_focus_rejections_remaining != 0) {
+        --g_focus_rejections_remaining;
+        return 0;
+    }
     g_foreign_focus = focus;
     return 1;
 }
@@ -370,6 +378,7 @@ extern "C" std::uint8_t bus_read_u8(std::uint32_t address) {
 extern "C" std::uint16_t bus_read_u16(std::uint32_t address) {
     if (address == 0x04000130) return g_keyinput;
     if (address == 0x03003DC8) return g_priority_timer;
+    if (address == 0x03003F88) return g_player_animation;
     if (address == 0x03001184) return g_player_speed;
     if (address == 0x030011C0) return g_player_sprite_vram_offset;
     if (address == 0x0300118E) return static_cast<std::uint16_t>(g_player_feet_x);
@@ -386,7 +395,10 @@ extern "C" std::uint32_t bus_read_u32(std::uint32_t address) {
     if (address == 0x0300401C) return g_player_macro;
     return 0;
 }
-extern "C" void bus_write_u16(std::uint32_t, std::uint16_t) { ++g_bus_write_count; }
+extern "C" void bus_write_u16(std::uint32_t address, std::uint16_t value) {
+    ++g_bus_write_count;
+    if (address == 0x03003F88) g_player_animation = value;
+}
 
 bool enter_portal(ArmCpuState* cpu) {
     if (!cpu) return false;
@@ -544,6 +556,73 @@ int main(int argc, char** argv) {
         g_foreign_focus->destination_link_feet_y != menu_focus_before.destination_link_feet_y ||
         g_bus_write_count != writes_before_menu || !same_cpu(observe_cpu, observe_before))
         return fail("native pause-menu close did not resume the stable Zelda session read-only");
+    // Prime an exact Zelda1/01 provider, then start a host-only A swing. The
+    // focused Link has no guest ItemSword, so this commits HostSword's private
+    // background buffer alongside the focus descriptor without a guest write.
+    auto& menu_swing_inventory = minish::foreign_world::foreign_world_native_state().inventory();
+    const minish::foreign_world::CrossWorldItemId menu_swing_sword{
+        minish::foreign_world::WorldId::Zelda1, 1};
+    const minish::foreign_world::ItemTraits menu_swing_traits{
+        1, menu_swing_sword, minish::foreign_world::ItemUseKind::Equip,
+        minish::foreign_world::ResourcePoolProvenance::None};
+    std::string menu_swing_error;
+    if (!menu_swing_inventory.acquire_item(
+            menu_swing_sword, minish::foreign_world::OwnershipFlags::Owned,
+            minish::foreign_world::Capability::Sword, menu_swing_traits,
+            &menu_swing_error) ||
+        !menu_swing_inventory.set_loadout_slot(
+            minish::foreign_world::LoadoutId::A, 0, menu_swing_sword,
+            &menu_swing_error))
+        return fail("could not stage exact Zelda sword for menu retry: " + menu_swing_error);
+    const unsigned writes_before_menu_swing = g_bus_write_count;
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (!g_foreign_background || !g_foreign_focus ||
+        g_bus_write_count != writes_before_menu_swing || !same_cpu(observe_cpu, observe_before))
+        return fail("selected Zelda sword did not start a read-only host swing before menu retry");
+    // A second-call focus rejection can roll the host-swing background and
+    // focus back to the last complete pair. The native menu-close branch
+    // retries even while frozen, so its next candidate must not overwrite
+    // either restored raw buffer before it has itself been accepted.
+    const auto* const rollback_background = g_foreign_background;
+    const auto* const rollback_focus = g_foreign_focus;
+    const auto rollback_background_bytes = std::make_unique<std::array<
+        std::uint16_t, z1::kOwRenderWidth * z1::kOwRenderHeight>>();
+    std::copy_n(rollback_background, rollback_background_bytes->size(),
+                rollback_background_bytes->begin());
+    const auto rollback_focus_bytes = *rollback_focus;
+    const unsigned writes_before_focus_menu_retry = g_bus_write_count;
+    if (gba_mod_function_entry(0x080A4D88u, 1, &observe_cpu) != 0 ||
+        g_foreign_background || g_foreign_focus)
+        return fail("focus-retry fixture could not suspend Zelda presentation");
+    g_focus_rejections_remaining = 1;
+    ++g_frame;
+    g_keyinput = 0x03ff;
+    if (gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu) != 0 ||
+        g_foreign_background != rollback_background ||
+        g_foreign_focus != rollback_focus ||
+        !std::equal(rollback_background_bytes->begin(), rollback_background_bytes->end(),
+                    rollback_background) ||
+        std::memcmp(&rollback_focus_bytes, rollback_focus,
+                    sizeof(rollback_focus_bytes)) != 0 ||
+        g_bus_write_count != writes_before_focus_menu_retry ||
+        !same_cpu(observe_cpu, observe_before))
+        return fail("rejected menu-close focus publication mutated its restored pair");
+    ++g_frame;
+    if (gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu) != 0 ||
+        !g_foreign_background || !g_foreign_focus ||
+        g_foreign_background == rollback_background ||
+        g_foreign_focus == rollback_focus ||
+        !std::equal(rollback_background_bytes->begin(), rollback_background_bytes->end(),
+                    rollback_background) ||
+        !std::equal(rollback_background_bytes->begin(), rollback_background_bytes->end(),
+                    g_foreign_background) ||
+        std::memcmp(&rollback_focus_bytes, rollback_focus,
+                    sizeof(rollback_focus_bytes)) != 0 ||
+        g_bus_write_count != writes_before_focus_menu_retry ||
+        !same_cpu(observe_cpu, observe_before))
+        return fail("menu-close retry overwrote the restored focus before committing a pair");
     // A rejected first menu-close publication happens after InitPauseMenu has
     // intentionally cleared the foreign PPU pair. It must still retain the
     // logical Zelda shield (blocking native player motion), freeze/retry on
@@ -1067,19 +1146,29 @@ int main(int argc, char** argv) {
     const auto after_host_edge = minish::foreign_world::foreign_world_native_state()
         .zelda1_overworld_session_blob();
     // The Zelda1/01 record cannot start a native TMC ItemSword on a save that
-    // has no native sword. Its host A edge must therefore also publish a
-    // visible, compositor-only blade from the focused Link feet. IdleNorth
-    // begins the original host blade at feetY-16; this checks presentation,
-    // not guest OAM/animation state.
+    // has no native sword. Its host A edge must therefore publish the first
+    // (wind-up) pose of the compositor-only nine-frame slash.  This verifies
+    // the directional multi-pixel hilt/blade geometry rather than a legacy
+    // single fixed pixel, and remains purely a presentation check: guest OAM
+    // and ItemSword state are still inactive.
     const bool host_swing_visible = g_foreign_background && g_foreign_focus &&
-        g_foreign_focus->destination_link_feet_x >= 0 &&
-        g_foreign_focus->destination_link_feet_x < 240 &&
-        g_foreign_focus->destination_link_feet_y >= 16 &&
-        g_foreign_focus->destination_link_feet_y < 160 &&
-        g_foreign_background[
-            static_cast<std::size_t>(g_foreign_focus->destination_link_feet_y - 16) *
-                240 + static_cast<std::size_t>(g_foreign_focus->destination_link_feet_x)] ==
-            0x7fffu;
+        g_foreign_focus->destination_link_feet_x >= 6 &&
+        g_foreign_focus->destination_link_feet_x < 237 &&
+        g_foreign_focus->destination_link_feet_y >= 15 &&
+        g_foreign_focus->destination_link_feet_y < 160 && [&] {
+            const int feet_x = g_foreign_focus->destination_link_feet_x;
+            const int feet_y = g_foreign_focus->destination_link_feet_y;
+            const auto pixel = [&](int x, int y) {
+                return g_foreign_background[static_cast<std::size_t>(y) * 240 +
+                                            static_cast<std::size_t>(x)];
+            };
+            // North wind-up (elapsed frame zero): the silver blade crosses
+            // its blue guard, then travels diagonally from (-5,-6) to (+2,-13).
+            for (int step = 0; step != 8; ++step)
+                if (pixel(feet_x - 5 + step, feet_y - 6 - step) != 0x7fffu)
+                    return false;
+            return true;
+        }();
     const bool host_edge_ok = after_host_edge.size() == before_host_edge.size() &&
         after_host_edge[kOw66Actor0HpOffset] + 1 == before_host_edge[kOw66Actor0HpOffset] &&
         g_bus_write_count == writes_before_host_edge && same_cpu(observe_cpu, host_edge_before) &&
@@ -1097,12 +1186,147 @@ int main(int argc, char** argv) {
                       combat_inventory.ownership({minish::foreign_world::WorldId::Native, 1}))) << "\n";
         return fail("selected Zelda A edge did not publish a visible host-only exact-origin swing");
     }
+    // PlayerUpdate invokes sub_08078FB0 after DoPlayerAction and directly
+    // before DrawEntity. A selected exact Zelda1/01 sword may request the
+    // source's ANIM_SWORD body pose there, but it must do nothing else: no
+    // CPU replacement, save/equipment/item-entity write, or Native-item
+    // forgery. This is an actual-ROM OW66 fixture; only the native resolver's
+    // one transient PlayerState.animation u16 is permitted.
+    ArmCpuState body_animation_cpu{};
+    body_animation_cpu.R[0] = z1::kMinishPlayerEntityAddress;
+    const ArmCpuState body_animation_before = body_animation_cpu;
+    const unsigned writes_before_body_animation = g_bus_write_count;
+    g_player_animation = 0x0104; // source's ordinary walk/default resolver value.
+    if (gba_mod_function_entry(0x08078FB0u, 1, &body_animation_cpu) != 0 ||
+        !same_cpu(body_animation_cpu, body_animation_before) ||
+        g_bus_write_count != writes_before_body_animation + 1 ||
+        g_player_animation != 0x0108 ||
+        combat_inventory.loadout_slot(minish::foreign_world::LoadoutId::A, 0) != zelda_sword ||
+        combat_inventory.ownership({minish::foreign_world::WorldId::Native, 1}) !=
+            minish::foreign_world::OwnershipFlags::None)
+        return fail("Zelda1/01 body-animation seam was not a single declining transient request");
+    // A non-player R0 cannot receive the presentation request.
+    body_animation_cpu.R[0] = 0x03001200u;
+    const unsigned writes_before_nonplayer = g_bus_write_count;
+    if (gba_mod_function_entry(0x08078FB0u, 1, &body_animation_cpu) != 0 ||
+        g_bus_write_count != writes_before_nonplayer)
+        return fail("body-animation seam touched a non-player entity");
+    // Only PlayerUpdate's immediate DrawEntity(&gPlayerEntity) may consume
+    // the lease; it restores the exact native value before draw, leaving the
+    // source-resolved sprite itself intact for the real game's draw call.
+    ArmCpuState body_draw_cpu{};
+    body_draw_cpu.R[0] = z1::kMinishPlayerEntityAddress;
+    const ArmCpuState body_draw_before = body_draw_cpu;
+    const unsigned writes_before_body_restore = g_bus_write_count;
+    if (gba_mod_function_entry(0x0800404Cu, 1, &body_draw_cpu) != 0 ||
+        !same_cpu(body_draw_cpu, body_draw_before) ||
+        g_bus_write_count != writes_before_body_restore + 1 ||
+        g_player_animation != 0x0104)
+        return fail("PlayerUpdate DrawEntity did not restore the exact native animation state");
+    // A real native ItemSword remains authoritative; the bridge must not
+    // interfere with its state machine or manufacture a second body request.
+    g_active_item_behavior = 1; g_active_item_priority = 1;
+    g_player_sword_state = 1; g_player_attack_status = 1;
+    body_animation_cpu.R[0] = z1::kMinishPlayerEntityAddress;
+    const unsigned writes_before_native_sword = g_bus_write_count;
+    if (gba_mod_function_entry(0x08078FB0u, 1, &body_animation_cpu) != 0 ||
+        g_bus_write_count != writes_before_native_sword)
+        return fail("body-animation seam interfered with a native ItemSword");
+    // The seam is broader than the sword collision guard: any active native
+    // item animation owns this resolver, including a non-sword behavior.
+    g_active_item_behavior = 9; g_active_item_priority = 1;
+    g_player_sword_state = 0; g_player_attack_status = 0;
+    const unsigned writes_before_native_bow = g_bus_write_count;
+    if (gba_mod_function_entry(0x08078FB0u, 1, &body_animation_cpu) != 0 ||
+        g_bus_write_count != writes_before_native_bow)
+        return fail("body-animation seam interfered with an active non-sword native item");
+    g_active_item_behavior = 0; g_active_item_priority = 0;
+    g_player_sword_state = 0; g_player_attack_status = 0;
     // Same source frame through the IWRAM entry cannot produce a second hit.
     if (gba_mod_function_entry(0x03005F40u, 0, &observe_cpu) != 0 ||
         minish::foreign_world::foreign_world_native_state().zelda1_overworld_session_blob() !=
-            after_host_edge || g_bus_write_count != writes_before_host_edge ||
+            after_host_edge || g_bus_write_count != writes_before_body_animation + 2 ||
         !same_cpu(observe_cpu, host_edge_before))
         return fail("dual UpdateEntities observation duplicated the host Zelda sword hit");
+    // If a nonstandard lifecycle skips PlayerUpdate's DrawEntity, the next
+    // foreign UpdateEntities observation restores the pending native value
+    // before it can survive another source frame or checkpoint boundary.
+    g_player_animation = 0x0100;
+    const unsigned writes_before_fallback_pre = g_bus_write_count;
+    if (gba_mod_function_entry(0x08078FB0u, 1, &body_animation_cpu) != 0 ||
+        g_player_animation != 0x0108 ||
+        g_bus_write_count != writes_before_fallback_pre + 1)
+        return fail("could not stage a pending body-animation lifecycle restore");
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (g_player_animation != 0x0100 ||
+        g_bus_write_count != writes_before_fallback_pre + 2)
+        return fail("next lifecycle frame did not restore a missed body-animation post hook");
+    // Pause/menu and transition boundaries are explicit recovery points too.
+    // Both must restore the paired field before they may stop or redirect the
+    // native PlayerUpdate flow.
+    g_player_animation = 0x0104;
+    const unsigned writes_before_menu_restore = g_bus_write_count;
+    if (gba_mod_function_entry(0x08078FB0u, 1, &body_animation_cpu) != 0 ||
+        g_player_animation != 0x0108)
+        return fail("could not stage a pending body-animation menu restore");
+    if (gba_mod_function_entry(0x080A4D88u, 1, &observe_cpu) != 0 ||
+        g_player_animation != 0x0104 ||
+        g_bus_write_count != writes_before_menu_restore + 2)
+        return fail("native Start boundary did not restore body-animation state");
+    // Reopen the compositor lease exactly as source menu-close does before
+    // continuing the active-swing expiry assertions.
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    g_player_animation = 0x0100;
+    const unsigned writes_before_exit_restore = g_bus_write_count;
+    if (gba_mod_function_entry(0x08078FB0u, 1, &body_animation_cpu) != 0 ||
+        g_player_animation != 0x0108)
+        return fail("could not stage a pending body-animation exit restore");
+    if (gba_mod_function_entry(0x08080840u, 1, &observe_cpu) != 0 ||
+        g_player_animation != 0x0100 ||
+        g_bus_write_count != writes_before_exit_restore + 2)
+        return fail("transition boundary did not restore body-animation state");
+    // The body request is tied to the bounded compositor swing. Once that
+    // presentation lease expires, the source resolver receives no further
+    // override and naturally returns Link to its ordinary animation path.
+    g_keyinput = 0x03ff;
+    for (unsigned i = 1; i != z1::HostSwordSwingPresentation::kVisibleFrames; ++i) {
+        ++g_frame;
+        (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    }
+    body_animation_cpu.R[0] = z1::kMinishPlayerEntityAddress;
+    const unsigned writes_before_swing_expiry = g_bus_write_count;
+    if (gba_mod_function_entry(0x08078FB0u, 1, &body_animation_cpu) != 0 ||
+        g_bus_write_count != writes_before_swing_expiry)
+        return fail("expired host swing kept requesting Minish sword body animation");
+    // A provider restore replaces the whole guest bus. A pending pre-resolver
+    // value belongs to the discarded timeline and must be forgotten without
+    // writing it into the restored player's distinct animation field.
+    g_keyinput = static_cast<std::uint16_t>(0x03ff & ~z1::kGbaKeyA);
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    g_player_animation = 0x0104;
+    if (gba_mod_function_entry(0x08078FB0u, 1, &body_animation_cpu) != 0 ||
+        g_player_animation != 0x0108)
+        return fail("could not stage a pending body-animation provider restore");
+    minish::foreign_world::ForeignWorldNativeState body_animation_snapshot;
+    if (!body_animation_snapshot.set_zelda1_overworld_session_blob(
+            minish::foreign_world::foreign_world_native_state()
+                .zelda1_overworld_session_blob(), &persistence_error))
+        return fail("could not stage body-animation provider snapshot: " + persistence_error);
+    body_animation_snapshot.set_zelda1_presentation_active(true);
+    // Mock the newly restored guest bus after the pre-hook ran in the old one.
+    g_player_animation = 0x0100;
+    minish::foreign_world::foreign_world_native_state().replace_after_provider_restore(
+        std::move(body_animation_snapshot));
+    const unsigned writes_before_provider_body_restore = g_bus_write_count;
+    g_keyinput = 0x03ff;
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (g_player_animation != 0x0100 ||
+        g_bus_write_count != writes_before_provider_body_restore)
+        return fail("provider restore leaked a prior-timeline body-animation field into guest state");
     // Native room changes, transitions, and even a dead-host sample are not
     // foreign-world return portals. Exercise them in both hook orders: the
     // only user-visible exit remains the explicit release-latched all-D-pad

@@ -479,12 +479,13 @@ public:
     if (entrance.destination_index != 16)
       return OverworldSessionCaveResult::kInvalid;
     Zelda1StartCaveControl cave_candidate;
-    if (!cave_candidate.load(*loader_.first_quest_data()) ||
+    if (!cave_candidate.load(*loader_.first_quest_data(), start_sword_acquired_) ||
         !cave_candidate.settle_entry())
       return OverworldSessionCaveResult::kInvalid;
     OwFramebuffer cave_frame{};
     if (!render_cave_frame(*loader_.first_quest_data(), start_sword_acquired_,
-                           false, 0,
+                           cave_candidate.dialogue_acknowledged(),
+                           cave_candidate.dialogue_visible_character_count(),
                            cave_candidate.standing_fire_animation_frame(),
                            &cave_frame, nullptr))
       return OverworldSessionCaveResult::kInvalid;

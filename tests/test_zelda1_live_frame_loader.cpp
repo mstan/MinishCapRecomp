@@ -685,6 +685,33 @@ int test_actual_ines_path(const char* path) {
     }
     auto cave_hotspot = initial_state;
     stage_source_position(&cave_hotspot, 0x40, 0x4d);
+    // A real player starts at the session's normal OW77 load position.  The
+    // mouth must be reachable from that state through ordinary one-pixel
+    // movement; staging the final source hotspot alone cannot prove it.
+    const auto hold_cardinal_input = [&session](std::int16_t dx, std::int16_t dy,
+                                                unsigned pixels) {
+        for (unsigned pixel = 0; pixel != pixels; ++pixel)
+            if (session.move_by(dx, dy) != z1::OverworldSessionMoveResult::kMoved)
+                return false;
+        return true;
+    };
+    const bool restored_for_route = session.restore(initial_state, &error);
+    // The normal OW77 source load is ($80,$9D).  Holding Left for $40 source
+    // pixels then Up for $50 reaches the normal cave's precise CheckWarps
+    // point ($40,$4D), with collision checked before every individual pixel.
+    const bool reached_mouth = restored_for_route &&
+                              hold_cardinal_input(-1, 0, 0x40) &&
+                              hold_cardinal_input(0, -1, 0x50);
+    const auto ordinary_route_stop = session.source_position();
+    const auto ordinary_route_entry = session.try_enter_cave();
+    if (!restored_for_route || !reached_mouth || ordinary_route_stop.obj_x != 0x40 ||
+        ordinary_route_stop.obj_y != 0x4d ||
+        ordinary_route_entry != z1::OverworldSessionCaveResult::kEntered)
+        return fail("ordinary OW77 movement could not reach the source cave mouth; stop=(" +
+                    std::to_string(ordinary_route_stop.obj_x) + "," +
+                    std::to_string(ordinary_route_stop.obj_y) + ")");
+    if (!session.restore(initial_state, &error))
+        return fail("could not restore OW77 after ordinary cave-mouth route: " + error);
     if (!crossed_cave_hotspot || !session.restore(cave_hotspot, &error) ||
         session.try_enter_cave() != z1::OverworldSessionCaveResult::kEntered ||
         !session.in_cave() || session.area() != z1::OverworldSessionArea::kCave ||
@@ -935,7 +962,7 @@ int test_actual_ines_path(const char* path) {
     const auto cave_after_sword = session.framebuffer();
     if (cave_after_sword == cave_before_sword ||
         !write_frame_ppm("build/zelda1_start_sword_cave_after.ppm", cave_after_sword))
-        return fail("taken sword did not retain source textbox or change cave sprites");
+        return fail("taken sword did not clear its one-time source presentation");
     const auto acquired_cave_state = session.serialize();
     if (!session.restore(acquired_cave_state, &error) || !session.start_sword_acquired() ||
         session.framebuffer() != cave_after_sword ||
@@ -968,12 +995,25 @@ int test_actual_ines_path(const char* path) {
     stage_source_position(&reentry_hotspot, 0x40, 0x4d);
     if (!session.restore(reentry_hotspot, &error) ||
         session.try_enter_cave() != z1::OverworldSessionCaveResult::kEntered ||
-        session.framebuffer() == cave_after_sword ||
+        !session.cave_dialogue_acknowledged() ||
+        session.cave_dialogue_visible_character_count() != 0 ||
         !same_rectangle(session.framebuffer(), cave_before_sword, 0x48 - 8, 0x80 - 72, 16, 16) ||
         !same_rectangle(session.framebuffer(), cave_before_sword, 0xa8 - 8, 0x80 - 72, 16, 16) ||
         same_rectangle(session.framebuffer(), cave_before_sword, 0x78 - 8, 0x80 - 72, 16, 16) ||
-        same_rectangle(session.framebuffer(), cave_before_sword, 0x78 + 4 - 8, 0x98 - 72, 8, 16))
-        return fail("re-entered start cave did not retain fires while hiding sword and Old Man");
+        same_rectangle(session.framebuffer(), cave_before_sword, 0x78 + 4 - 8, 0x98 - 72, 8, 16) ||
+        !same_rectangle(session.framebuffer(), cave_before_sword, 24, 32, 208, 8) ||
+        !same_rectangle(session.framebuffer(), cave_before_sword, 24, 40, 208, 8) ||
+        !write_frame_ppm("build/zelda1_start_sword_cave_reentry_no_text.ppm",
+                         session.framebuffer()) ||
+        session.move_cave_one(z1::CaveDirection::kDown) !=
+            z1::StartCaveMoveResult::kMoved)
+        return fail("taken-sword re-entry replayed text, blocked Link, or changed source fires");
+    // The person/text object is absent after acquisition, but InitCave's two
+    // type-$40 fires remain ordinary updating objects on every later entry.
+    const auto reentry_before_fire_tick = session.framebuffer();
+    if (!session.tick_cave_frame() ||
+        !same_rectangle(session.framebuffer(), reentry_before_fire_tick, 24, 32, 208, 8))
+        return fail("taken-sword re-entry resumed text instead of fire-only updates");
     if (!session.restore(initial_state, &error) || session.in_cave() ||
         session.framebuffer() != stable_frame)
         return fail("OW session did not restore before edge traversal: " + error);

@@ -168,6 +168,26 @@ cannot double-hit. This does **not** inject Zelda-origin sword behavior into
 normal Minish Cap gameplay; native-world Zelda-item behavior mapping remains
 deferred until a source-proven guest equipment boundary exists.
 
+During an active selected exact `Zelda1/01` host swing, presentation requests
+Minish Cap's genuine body pose at the final `PlayerUpdate` resolver,
+`sub_08078FB0` (`08078FB0`). Pinned `src/interrupts.c:PlayerUpdate` calls it
+after `DoPlayerAction` and immediately before `DrawEntity`; pinned
+`src/playerUtils.c:sub_08078FB0` resolves `PlayerState.animation` into the
+live Link sprite. The hook accepts only `R0 == &gPlayerEntity` (`03001160`),
+an active validated non-menu/non-frozen foreign presentation, no source
+`ItemSword`, and the selected exact `Zelda1/01` record. It writes one
+transient `u16 PlayerState.animation` at `03003F88` to `ANIM_SWORD` (`0108`),
+then declines so the original resolver executes. Its immediate
+`DrawEntity(&gPlayerEntity)` call restores the saved `PlayerState.animation`
+value before source drawing, while retaining the newly resolved genuine Minish
+body sprite. The host's existing compositor blade remains the NES-styled
+sword. No `gSave` inventory/equipment or story byte, `gActiveItems` lane,
+item entity, collision state, or CPU register is changed; a missed post-draw
+lease is restored at the next lifecycle boundary in the same guest timeline,
+while a provider restore/reset discards the stale host lease without touching
+its newly restored guest bus. Ending/exiting the bounded host swing stops the
+write.
+
 For room `$66`, a source-coordinate, 17x24 forward hit rectangle is explicit
 host policy (not a claim that the two games share hitbox data). It uses the
 source animation-state snapshot (`north/east/south/west = 0/2/4/6`) and applies

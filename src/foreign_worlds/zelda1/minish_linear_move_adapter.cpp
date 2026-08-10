@@ -96,13 +96,16 @@ std::uint32_t linear_move_handled_return_pc(std::uint32_t lr) {
     return lr & ~1u;
 }
 
-const GbaForeignObjFocusTransform* ForeignObjFocusDoubleBuffer::next(
+const GbaForeignObjFocusTransform* ForeignObjFocusDoubleBuffer::prepare(
     std::int16_t source_feet_x, std::int16_t source_feet_y,
     std::int16_t destination_feet_x, std::int16_t destination_feet_y,
     std::uint16_t source_obj_tile_base, std::uint16_t source_aux_tile_base,
     std::uint16_t source_aux_tile_count, std::uint64_t hud_oam_mask_lo,
     std::uint64_t hud_oam_mask_hi) {
-    GbaForeignObjFocusTransform& out = buffers_[next_index_];
+    candidate_index_ = candidate_prepared_ ? candidate_index_
+                                          : (published_ ? (published_index_ ^ 1u) : 0u);
+    candidate_prepared_ = true;
+    GbaForeignObjFocusTransform& out = buffers_[candidate_index_];
     out = {
         GBA_FOREIGN_OBJ_FOCUS_ABI_VERSION,
         source_feet_x,
@@ -153,8 +156,33 @@ const GbaForeignObjFocusTransform* ForeignObjFocusDoubleBuffer::next(
         96,
         24,
     };
-    next_index_ ^= 1u;
     return &out;
+}
+
+void ForeignObjFocusDoubleBuffer::commit() {
+    if (!candidate_prepared_) return;
+    published_index_ = candidate_index_;
+    published_ = true;
+    candidate_prepared_ = false;
+}
+
+void ForeignObjFocusDoubleBuffer::discard() {
+    candidate_prepared_ = false;
+}
+
+const GbaForeignObjFocusTransform* ForeignObjFocusDoubleBuffer::next(
+    std::int16_t source_feet_x, std::int16_t source_feet_y,
+    std::int16_t destination_feet_x, std::int16_t destination_feet_y,
+    std::uint16_t source_obj_tile_base, std::uint16_t source_aux_tile_base,
+    std::uint16_t source_aux_tile_count, std::uint64_t hud_oam_mask_lo,
+    std::uint64_t hud_oam_mask_hi) {
+    const auto* result = prepare(source_feet_x, source_feet_y,
+                                 destination_feet_x, destination_feet_y,
+                                 source_obj_tile_base, source_aux_tile_base,
+                                 source_aux_tile_count, hud_oam_mask_lo,
+                                 hud_oam_mask_hi);
+    commit();
+    return result;
 }
 
 }  // namespace minish::foreign_world::zelda1

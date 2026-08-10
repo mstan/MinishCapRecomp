@@ -79,24 +79,44 @@ private:
 // address. The caller intentionally leaves R0..R14 and CPSR bit-identical.
 [[nodiscard]] std::uint32_t linear_move_handled_return_pc(std::uint32_t lr);
 
-// Immutable v6 PPU descriptor production. The two buffers are intentionally
-// separate: fully write the inactive descriptor, then publish its address.
-// This makes a prior PPU-visible descriptor stable through the next update.
+// Immutable v6 PPU descriptor production.  The two buffers use an explicit
+// prepare/commit/discard protocol: an unaccepted candidate is reusable, while
+// the PPU-visible descriptor remains pinned until a complete background/focus
+// pair is accepted.
 // The source-mapped player feet are associated with Entity::spriteVramOffset's
 // bounded OAM tile allocation, so nearby room props remain untouched.
 class ForeignObjFocusDoubleBuffer {
 public:
+    [[nodiscard]] const GbaForeignObjFocusTransform* prepare(
+        std::int16_t source_feet_x, std::int16_t source_feet_y,
+        std::int16_t destination_feet_x, std::int16_t destination_feet_y,
+        std::uint16_t source_obj_tile_base, std::uint16_t source_aux_tile_base,
+        std::uint16_t source_aux_tile_count, std::uint64_t hud_oam_mask_lo,
+        std::uint64_t hud_oam_mask_hi);
+    void commit();
+    void discard();
+    // Compatibility wrapper for standalone descriptor tests. The live plugin
+    // must pair prepare/commit/discard with background publication.
     [[nodiscard]] const GbaForeignObjFocusTransform* next(
         std::int16_t source_feet_x, std::int16_t source_feet_y,
         std::int16_t destination_feet_x, std::int16_t destination_feet_y,
         std::uint16_t source_obj_tile_base, std::uint16_t source_aux_tile_base,
         std::uint16_t source_aux_tile_count, std::uint64_t hud_oam_mask_lo,
         std::uint64_t hud_oam_mask_hi);
-    void reset() { next_index_ = 0; buffers_ = {}; }
+    void reset() {
+        published_index_ = 0;
+        candidate_index_ = 0;
+        published_ = false;
+        candidate_prepared_ = false;
+        buffers_ = {};
+    }
 
 private:
     std::array<GbaForeignObjFocusTransform, 2> buffers_{};
-    unsigned next_index_ = 0;
+    unsigned published_index_ = 0;
+    unsigned candidate_index_ = 0;
+    bool published_ = false;
+    bool candidate_prepared_ = false;
 };
 
 // KEYINPUT is active-low. Keeping the one-shot edge detector pure means an

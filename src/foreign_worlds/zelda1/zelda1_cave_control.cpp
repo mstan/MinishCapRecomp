@@ -49,19 +49,23 @@ bool get_first_quest_start_cave_old_man_sprite(
   return true;
 }
 
-bool Zelda1StartCaveControl::load(const FirstQuestData& data) {
+bool Zelda1StartCaveControl::load(const FirstQuestData& data, bool start_sword_taken) {
   OwFinalTileMap candidate{};
   if (!build_overworld_normal_cave_final_tile_map(data, &candidate)) return false;
   final_tiles_ = candidate;
   position_ = kEntryStart;
   loaded_ = true;
   entering_ = true;
-  dialogue_acknowledged_ = false;
+  // Z_01:InitCave tests GetRoomFlagUWItemState after it has installed the
+  // fires.  For a taken starting sword it clears ObjType+1 and calls
+  // UnhaltLink directly: no Old Man object and no selector-zero transfer are
+  // initialized.  `entering_` remains a separate source transition gate.
+  dialogue_acknowledged_ = start_sword_taken;
   dialogue_visible_character_count_ = 0;
   dialogue_frame_delay_ = 0;
   standing_fire_animation_frame_ = 0;
   standing_fire_animation_counter_ = kStandingFireFramesPerPhase;
-  start_sword_taken_ = false;
+  start_sword_taken_ = start_sword_taken;
   return true;
 }
 

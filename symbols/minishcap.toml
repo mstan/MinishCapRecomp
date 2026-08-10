@@ -27630,6 +27630,16 @@ addr = 0x08080840
 mode = "thumb"
 note = "Source-imported DoExitTransition clears the native-only Zelda portal overlay; it never modifies guest state."
 
+[[mod_function_hook]]
+addr = 0x08078FB0
+mode = "thumb"
+note = "Zelda1/01 sword presentation only: at PlayerUpdate's final source resolver, request ANIM_SWORD for the bounded host swing. It writes only transient PlayerState.animation, never save/equipment/story/entity state, then continues guest code; the immediate Player DrawEntity hook restores the field."
+
+[[mod_function_hook]]
+addr = 0x0800404C
+mode = "thumb"
+note = "Paired PlayerUpdate DrawEntity restore for the bounded Zelda1/01 body-animation lease. Accepts only R0=&gPlayerEntity and restores transient PlayerState.animation before source drawing."
+
 
 [[extra_func]]
 addr = 0x0805E5F8

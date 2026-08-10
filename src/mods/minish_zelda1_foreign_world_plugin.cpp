@@ -79,11 +79,23 @@ constexpr std::uint32_t kLinearMoveDirectionOld = 0x080027EA;
 // Source: zeldaret/tmc linker.ld, include/player.h, and playerUtils.c.
 // gActiveItems[0] is the CreateItem3 lane used by all ItemSword definitions.
 constexpr std::uint32_t kActiveItem0 = 0x03000B80;
+constexpr std::uint32_t kActiveItemStride = 0x1c;
 constexpr std::uint32_t kActiveItemBehaviorId = kActiveItem0 + 0x01;
 constexpr std::uint32_t kActiveItemPriority = kActiveItem0 + 0x09;
 constexpr std::uint32_t kActiveItemPlayerAnimationState = kActiveItem0 + 0x0A;
+constexpr std::uint32_t kActiveItemAnimationPriority = kActiveItem0 + 0x0F;
 constexpr std::uint32_t kPlayerAttackStatus = 0x03003F84; // PlayerState + 0x04
+// Source: zeldaret/tmc include/player.h PlayerState::animation.  This is
+// transient live player presentation state, not gSave equipment or inventory.
+constexpr std::uint32_t kPlayerAnimation = 0x03003F88; // PlayerState + 0x08
 constexpr std::uint32_t kPlayerSwordState = 0x03003F9B;   // PlayerState + 0x1B
+// Source: pinned `src/interrupts.c:PlayerUpdate`: this resolver runs after
+// DoPlayerAction and immediately before DrawEntity.  It is the only guest
+// seam used to request a Zelda-origin sword's *body* animation; the guest
+// resolver still runs normally and no player-item entity is created.
+constexpr std::uint32_t kResolvePlayerSprite = 0x08078FB0;
+constexpr std::uint32_t kDrawEntity = 0x0800404C;
+constexpr std::uint16_t kMinishSwordAnimation = 0x0108; // ANIM_SWORD
 
 SmithYardReadinessTracker g_tracker;
 MinishPortalReadinessTracker g_portal_tracker;
@@ -105,6 +117,12 @@ ActiveLowButtonEdge g_cave_a_edge;
 ActiveLowButtonEdge g_combat_a_edge;
 MinishForeignCombatAdapter g_foreign_combat;
 HostSwordSwingPresentation g_host_sword_swing;
+// The request is a strictly pre-resolver/post-resolver pair.  The source
+// resolver latches ANIM_SWORD into the player sprite, then its immediate
+// PlayerUpdate DrawEntity call restores the original PlayerState field before
+// draw.  This keeps the live source state normal outside that one resolver.
+bool g_player_sword_animation_restore_pending = false;
+std::uint16_t g_player_sword_animation_before = 0;
 bool g_combat_frame_seen = false;
 std::uint32_t g_last_combat_frame = 0;
 bool g_locomotion_frame_seen = false;
@@ -137,6 +155,12 @@ std::int16_t read_guest_s16(std::uint32_t address) {
 
 void clear_native_portal_overlay() {
     gba_mod_clear_foreign_screen_overlay();
+}
+
+void restore_player_sword_animation_if_pending() {
+    if (!g_player_sword_animation_restore_pending) return;
+    bus_write_u16(kPlayerAnimation, g_player_sword_animation_before);
+    g_player_sword_animation_restore_pending = false;
 }
 
 bool publish_native_portal_overlay(std::uint32_t source_frame,
@@ -232,10 +256,10 @@ bool publish_current_foreign_video() {
         level1_active ? static_cast<std::int16_t>(level1.player.y +
                                                    kZelda1LinkFeetOffsetY) :
         (cave_position ? cave_position->y : overworld_feet.y);
-    const auto* const background = g_host_sword_swing.compose(
+    const auto* const background = g_host_sword_swing.prepare(
         source_background, destination_feet_x, destination_feet_y);
     const HudOamMask hud_mask = read_live_hud_oam_mask();
-    const auto* focus = g_obj_focus.next(
+    const auto* focus = g_obj_focus.prepare(
         static_cast<std::int16_t>(read_guest_s16(kPlayerFeetX) -
                                   read_guest_s16(kRoomScrollX)),
         static_cast<std::int16_t>(read_guest_s16(kPlayerFeetY) -
@@ -252,8 +276,11 @@ bool publish_current_foreign_video() {
     // against a rejecting implementation that consumed the candidate first.
     // We intentionally never clear on a failure: an already-active session
     // freezes on its last complete Zelda publication.
-    if (gba_mod_publish_foreign_background(kZelda1ForeignWorldPluginId, background) == 0)
+    if (gba_mod_publish_foreign_background(kZelda1ForeignWorldPluginId, background) == 0) {
+        g_host_sword_swing.discard();
+        g_obj_focus.discard();
         return false;
+    }
     if (gba_mod_publish_foreign_obj_focus(kZelda1ForeignWorldPluginId, focus) == 0) {
         if (g_last_published_background)
             (void)gba_mod_publish_foreign_background(kZelda1ForeignWorldPluginId,
@@ -261,8 +288,12 @@ bool publish_current_foreign_video() {
         if (g_last_published_focus)
             (void)gba_mod_publish_foreign_obj_focus(kZelda1ForeignWorldPluginId,
                                                      g_last_published_focus);
+        g_host_sword_swing.discard();
+        g_obj_focus.discard();
         return false;
     }
+    g_host_sword_swing.commit();
+    g_obj_focus.commit();
     g_last_published_background = background;
     g_last_published_focus = focus;
     return true;
@@ -295,6 +326,11 @@ void enter_qa_video() {
 }
 
 void leave_qa_video(bool reset_trigger) {
+    // Normally DrawEntity consumed this lease within the same PlayerUpdate.
+    // Keep an explicit lifecycle recovery for a skipped source draw/menu/exit
+    // boundary so ANIM_SWORD can never remain in PlayerState after a host
+    // swing is gone. Reset is special: its new guest bus is already blank.
+    restore_player_sword_animation_if_pending();
     gba_mod_clear_foreign_obj_focus();
     gba_mod_clear_foreign_background();
     g_qa_video_active = false;
@@ -338,6 +374,9 @@ void freeze_active_foreign_session() {
 // while the host's own pause subtask owns all menu input, graphics, and actions.
 // In particular this does not reset, serialize, or otherwise alter Zelda state.
 int observe_init_pause_menu(std::uint32_t, int, ArmCpuState*) {
+    // Do not let a paused source frame retain an otherwise paired resolver
+    // request if a menu is entered at an unusual instruction boundary.
+    restore_player_sword_animation_if_pending();
     // This hook applies to both native and foreign menus. A cached field portal
     // must not sit over the pause menu while GameMain skips UpdateEntities.
     clear_native_portal_overlay();
@@ -373,6 +412,12 @@ bool apply_pending_native_restore() {
     auto& native = foreign_world_native_state();
     const auto generation = native.restore_generation();
     if (generation == g_seen_native_restore_generation) return true;
+    // The provider has already replaced the guest bus with a snapshot.  A
+    // pre-resolver lease belongs to the discarded timeline, so writing its
+    // saved value here would corrupt the restored player state.  Treat this
+    // exactly like reset: drop host bookkeeping without a guest write.
+    g_player_sword_animation_restore_pending = false;
+    g_player_sword_animation_before = 0;
     if (!g_overworld_session.loaded()) return false;
     const auto& blob = native.zelda1_overworld_session_blob();
     // A provider restore that predates Z1OS v5 has no authoritative live
@@ -668,6 +713,16 @@ int observe_update_entities(std::uint32_t, int, ArmCpuState*) {
         const auto& native = foreign_world_native_state();
         const bool restore_arrived =
             native.restore_generation() != g_seen_native_restore_generation;
+        // A provider restore has already replaced the guest bus.  Let its
+        // handler discard any stale pre-resolver lease before considering the
+        // ordinary missed-post-draw repair for this timeline.
+        if (!restore_arrived) {
+            // A successful PlayerUpdate always reaches DrawEntity immediately
+            // after sub_08078FB0. If a nonstandard lifecycle skipped that
+            // draw, restore before the next source update can serialize or
+            // reuse it.
+            restore_player_sword_animation_if_pending();
+        }
         if (restore_arrived && !apply_pending_native_restore()) {
             freeze_active_foreign_session();
             // A corrupt/restoration-incompatible provider record may not
@@ -855,8 +910,71 @@ int observe_update_entities(std::uint32_t, int, ArmCpuState*) {
 // Remove the native-only compositor layer at that precise boundary: it has no
 // guest side effects and the next eligible room observation may republish it.
 int observe_exit_transition(std::uint32_t, int, ArmCpuState*) {
+    restore_player_sword_animation_if_pending();
     g_native_portal.reset();
     clear_native_portal_overlay();
+    return 0;
+}
+
+bool should_request_minish_sword_body_animation(std::uint32_t player_address) {
+    // The body pose is valid only while the same bounded host swing that
+    // owns the compositor blade is still active.  Never synthesize a TMC
+    // ItemSword: a real source sword keeps its own animation/entity path.
+    if (player_address != kMinishPlayerEntityAddress || !g_qa_room.active() ||
+        !g_qa_video_active || g_foreign_menu_suspended ||
+        g_foreign_session_frozen || !g_foreign_survival_safe ||
+        !g_overworld_session.loaded() || !g_host_sword_swing.active())
+        return false;
+    // Any live native item animation owns this source resolver.  The main
+    // lane check below is still used for the sword-specific collision bridge,
+    // but this broader four-lane gate prevents a Zelda visual request from
+    // overriding a native bow, boots, lantern, or other item animation.
+    for (std::uint32_t lane = 0; lane != 4; ++lane) {
+        const std::uint32_t item = kActiveItem0 + lane * kActiveItemStride;
+        if (bus_read_u8(item + (kActiveItemBehaviorId - kActiveItem0)) != 0 &&
+            (bus_read_u8(item + (kActiveItemPriority - kActiveItem0)) != 0 ||
+             bus_read_u8(item + (kActiveItemAnimationPriority - kActiveItem0)) != 0))
+            return false;
+    }
+    const MinishSwordSample source_sword{
+        bus_read_u8(kActiveItemBehaviorId),
+        bus_read_u8(kActiveItemPriority),
+        bus_read_u8(kActiveItemPlayerAnimationState),
+        bus_read_u8(kPlayerSwordState),
+        bus_read_u8(kPlayerAttackStatus),
+    };
+    if (is_active_minish_sword(source_sword)) return false;
+    const auto selected = resolve_foreign_sword(
+        foreign_world_native_state().inventory(), LoadoutId::A);
+    // Same-number Native and Zelda records deliberately remain distinct.  A
+    // host blade caused by an arbitrary compatible sword must not modify this
+    // Minish resolver; this narrow presentation bridge is Zelda1/01 only.
+    return selected && selected->acquired_id ==
+        CrossWorldItemId{WorldId::Zelda1, 0x01};
+}
+
+int observe_player_sprite_resolve(std::uint32_t, int, ArmCpuState* cpu) {
+    // `PlayerUpdate` supplies R0=&gPlayerEntity.  This is intentionally a
+    // declining hook: apart from one u16 ephemeral animation request, the
+    // original Minish resolver and DrawEntity execute unchanged and the CPU
+    // context is byte-identical.  It makes Link use the genuine ANIM_SWORD
+    // body frames while the existing compositor supplies the NES-styled blade.
+    if (cpu && should_request_minish_sword_body_animation(cpu->R[0])) {
+        // A previous missed DrawEntity is repaired before taking a new lease;
+        // the hook never stacks or loses the exact native field it replaces.
+        restore_player_sword_animation_if_pending();
+        g_player_sword_animation_before = bus_read_u16(kPlayerAnimation);
+        bus_write_u16(kPlayerAnimation, kMinishSwordAnimation);
+        g_player_sword_animation_restore_pending = true;
+    }
+    return 0;
+}
+
+int observe_player_draw(std::uint32_t, int, ArmCpuState* cpu) {
+    // Pinned PlayerUpdate calls DrawEntity(&gPlayerEntity) immediately after
+    // sub_08078FB0.  A different entity's draw cannot consume the lease.
+    if (cpu && cpu->R[0] == kMinishPlayerEntityAddress)
+        restore_player_sword_animation_if_pending();
     return 0;
 }
 
@@ -909,6 +1027,10 @@ void reset_smith_yard_readiness_plugin() {
     g_combat_a_edge.reset();
     g_foreign_combat.reset();
     g_host_sword_swing.reset();
+    // The reset callback observes a freshly recreated guest bus. Writing the
+    // old field here would corrupt reset state; discard only host bookkeeping.
+    g_player_sword_animation_restore_pending = false;
+    g_player_sword_animation_before = 0;
     g_combat_frame_seen = false;
     g_locomotion_frame_seen = false;
     g_lifecycle_frame_seen = false;
@@ -1000,6 +1122,11 @@ GBA_MOD_CONSTRUCTOR(minish_register_zelda1_foreign_world_plugin) {
     (void)gba_mod_register_function_entry_plugin(
         kZelda1ForeignWorldPluginId, kLinearMoveDirectionOld, 1,
         replace_player_linear_move);
+    (void)gba_mod_register_function_entry_plugin(
+        kZelda1ForeignWorldPluginId, kResolvePlayerSprite, 1,
+        observe_player_sprite_resolve);
+    (void)gba_mod_register_function_entry_plugin(
+        kZelda1ForeignWorldPluginId, kDrawEntity, 1, observe_player_draw);
     (void)gba_mod_register_activation_plugin(
         kZelda1ForeignWorldPluginId, activate_smith_yard_readiness_plugin);
 }
