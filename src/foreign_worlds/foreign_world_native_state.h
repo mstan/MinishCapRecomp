@@ -1,6 +1,7 @@
 // Game-owned native persistence for the Zelda 1 foreign-world seam.
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -8,6 +9,7 @@
 #include <vector>
 
 #include "foreign_worlds/foreign_world.h"
+#include "foreign_worlds/zelda1/zelda1_overworld_music.h"
 #include "mod_state.h"
 
 namespace minish::foreign_world {
@@ -17,6 +19,8 @@ namespace minish::foreign_world {
 // An empty blob is still allowed for a session that has not entered Zelda.
 constexpr std::size_t kZelda1WorldBlobBytes = 340;
 constexpr std::size_t kZelda1OverworldSessionBlobBytes = 64;
+constexpr std::size_t kZelda1OverworldMusicBlobBytes =
+    zelda1::Zelda1OverworldMusicRenderer::kSerializedSize;
 
 class ForeignWorldNativeState {
 public:
@@ -38,6 +42,26 @@ public:
         return zelda1_overworld_session_blob_;
     }
 
+    // Optional transport state for the Zelda 1 overworld music renderer.  It
+    // is separate from the gameplay/session record so an older save cleanly
+    // resumes with a freshly started tune rather than a guessed oscillator
+    // state.
+    bool set_zelda1_overworld_music_blob(
+        std::span<const std::uint8_t> blob, std::string* error = nullptr);
+    // Audio-pull callback safe: validates then copies into fixed storage, with
+    // no allocation, locking, guest access, or renderer mutation. Callers
+    // must serialize the renderer into caller-owned stack storage first.
+    bool checkpoint_zelda1_overworld_music_blob(
+        std::span<const std::uint8_t> blob, std::string* error = nullptr);
+    void clear_zelda1_overworld_music_blob() {
+        zelda1_overworld_music_blob_present_ = false;
+    }
+    [[nodiscard]] std::span<const std::uint8_t> zelda1_overworld_music_blob() const {
+        return zelda1_overworld_music_blob_present_
+            ? std::span<const std::uint8_t>(zelda1_overworld_music_blob_)
+            : std::span<const std::uint8_t>();
+    }
+
     // Host presentation lifecycle is separate from Z1OS terrain progress,
     // letting an active foreign PPU view resume without making a normal exit
     // discard its world state.
@@ -56,8 +80,8 @@ public:
     }
     void replace_after_provider_restore(ForeignWorldNativeState&& restored);
 
-    // FWNS v3 framing used inside the engine's trusted provider payload.
-    // v1/v2 input remains readable and has no active presentation lifecycle.
+    // FWNS v4 framing used inside the engine's trusted provider payload.
+    // v1-v3 input remains readable and migrates to an empty music state.
     // Deserialize validates into a temporary state and swaps only on success.
     std::vector<std::uint8_t> serialize() const;
     static bool deserialize(std::span<const std::uint8_t> bytes,
@@ -68,6 +92,9 @@ private:
     InventoryCore inventory_;
     std::vector<std::uint8_t> zelda1_world_blob_;
     std::vector<std::uint8_t> zelda1_overworld_session_blob_;
+    std::array<std::uint8_t, kZelda1OverworldMusicBlobBytes>
+        zelda1_overworld_music_blob_{};
+    bool zelda1_overworld_music_blob_present_ = false;
     bool zelda1_presentation_active_ = false;
     std::uint64_t restore_generation_ = 0;
 };

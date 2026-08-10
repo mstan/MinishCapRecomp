@@ -80,6 +80,7 @@ add_executable(MinishCapRecomp
     # asset and renders OW77 once during activation; no importer cache or
     # guest VRAM path is involved.
     src/foreign_worlds/zelda1/zelda1_first_quest_data.cpp
+    src/foreign_worlds/zelda1/zelda1_overworld_music.cpp
     src/foreign_worlds/zelda1/zelda1_level1_session.cpp
     src/foreign_worlds/zelda1/zelda1_level1_live_adapter.cpp
     src/foreign_worlds/zelda1/zelda1_cave_control.cpp
@@ -169,19 +170,6 @@ if(BUILD_TESTING)
         minish_foreign_world_core)
     add_test(NAME minish_foreign_world COMMAND minish_foreign_world_test)
 
-    add_executable(minish_foreign_world_native_state_test
-        tests/test_foreign_world_native_state.cpp
-        src/foreign_worlds/foreign_world.cpp
-        src/foreign_worlds/foreign_world_native_state.cpp)
-    target_include_directories(minish_foreign_world_native_state_test PRIVATE
-        src
-        "${GBARECOMP_ROOT}/src/debug"
-        "${GBARECOMP_ROOT}/src/runtime")
-    target_link_libraries(minish_foreign_world_native_state_test PRIVATE
-        gbarecomp_debug)
-    add_test(NAME minish_foreign_world_native_state
-        COMMAND minish_foreign_world_native_state_test)
-
     add_library(minish_zelda1_first_quest_data STATIC
         src/foreign_worlds/zelda1/zelda1_first_quest_data.cpp)
     target_include_directories(minish_zelda1_first_quest_data PUBLIC src)
@@ -192,6 +180,33 @@ if(BUILD_TESTING)
         minish_zelda1_first_quest_data)
     add_test(NAME minish_zelda1_first_quest_data
         COMMAND minish_zelda1_first_quest_data_test)
+
+    add_library(minish_zelda1_overworld_music STATIC
+        src/foreign_worlds/zelda1/zelda1_overworld_music.cpp)
+    target_include_directories(minish_zelda1_overworld_music PUBLIC src)
+    target_link_libraries(minish_zelda1_overworld_music PUBLIC
+        minish_zelda1_first_quest_data)
+
+    add_executable(minish_zelda1_overworld_music_test
+        tests/test_zelda1_overworld_music.cpp)
+    target_link_libraries(minish_zelda1_overworld_music_test PRIVATE
+        minish_zelda1_overworld_music)
+    add_test(NAME minish_zelda1_overworld_music
+        COMMAND minish_zelda1_overworld_music_test)
+
+    add_executable(minish_foreign_world_native_state_test
+        tests/test_foreign_world_native_state.cpp
+        src/foreign_worlds/foreign_world.cpp
+        src/foreign_worlds/foreign_world_native_state.cpp)
+    target_include_directories(minish_foreign_world_native_state_test PRIVATE
+        src
+        "${GBARECOMP_ROOT}/src/debug"
+        "${GBARECOMP_ROOT}/src/runtime")
+    target_link_libraries(minish_foreign_world_native_state_test PRIVATE
+        gbarecomp_debug
+        minish_zelda1_overworld_music)
+    add_test(NAME minish_foreign_world_native_state
+        COMMAND minish_foreign_world_native_state_test)
 
     add_library(minish_zelda1_level1_session STATIC
         src/foreign_worlds/zelda1/zelda1_level1_session.cpp)
@@ -298,6 +313,7 @@ if(BUILD_TESTING)
         src/foreign_worlds/zelda1/minish_linear_move_adapter.cpp
         src/foreign_worlds/zelda1/minish_foreign_combat_adapter.cpp
         src/foreign_worlds/zelda1/zelda1_first_quest_data.cpp
+        src/foreign_worlds/zelda1/zelda1_overworld_music.cpp
         src/foreign_worlds/zelda1/zelda1_cave_control.cpp
         src/foreign_worlds/zelda1/zelda1_live_frame_loader.cpp
         src/foreign_worlds/zelda1/zelda1_level1_session.cpp

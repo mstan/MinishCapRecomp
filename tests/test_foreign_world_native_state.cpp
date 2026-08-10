@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "foreign_worlds/foreign_world_native_state.h"
+#include "foreign_worlds/zelda1/zelda1_overworld_music.h"
 
 namespace fw = minish::foreign_world;
 
@@ -13,6 +14,12 @@ namespace {
 int fail(const std::string& message) {
     std::cerr << "FAIL: " << message << '\n';
     return 1;
+}
+
+bool same_bytes(std::span<const std::uint8_t> left,
+                std::span<const std::uint8_t> right) {
+    return left.size() == right.size() &&
+           std::equal(left.begin(), left.end(), right.begin());
 }
 
 fw::ItemTraits traits(fw::WorldId origin, fw::ResourcePoolProvenance pool) {
@@ -64,6 +71,15 @@ std::vector<std::uint8_t> overworld_session_ow66_v5() {
     return session;
 }
 
+std::vector<std::uint8_t> stopped_overworld_music_state() {
+    // The renderer's stopped state is an intentionally valid, bounded
+    // transport record.  It is sufficient to prove FWNS treats the music
+    // state as opaque-but-structurally-validated native state.
+    const fw::zelda1::Zelda1OverworldMusicRenderer renderer;
+    const auto serialized = renderer.serialize();
+    return {serialized.begin(), serialized.end()};
+}
+
 bool populate(fw::ForeignWorldNativeState* state, std::string* error) {
     const fw::CrossWorldItemId native{fw::WorldId::Native, 7};
     const fw::CrossWorldItemId zelda{fw::WorldId::Zelda1, 7};
@@ -82,8 +98,10 @@ bool populate(fw::ForeignWorldNativeState* state, std::string* error) {
     inventory.zelda1_resources() = {12, 16, 255, 8, 4, 2};
     const auto world = partial_aquamentus_v2();
     const auto session = overworld_session_v5();
+    const auto music = stopped_overworld_music_state();
     if (!state->set_zelda1_world_blob(world, error) ||
-        !state->set_zelda1_overworld_session_blob(session, error))
+        !state->set_zelda1_overworld_session_blob(session, error) ||
+        !state->set_zelda1_overworld_music_blob(music, error))
         return false;
     state->set_zelda1_presentation_active(true);
     return true;
@@ -105,14 +123,25 @@ int test_native_state_and_provider_roundtrip() {
     if (!fw::ForeignWorldNativeState::deserialize(empty.serialize(), &empty_restored, &error) ||
         !empty_restored.zelda1_world_blob().empty() ||
         !empty_restored.zelda1_overworld_session_blob().empty() ||
+        !empty_restored.zelda1_overworld_music_blob().empty() ||
         empty_restored.zelda1_presentation_active())
         return fail("empty-before-Zelda state did not remain empty: " + error);
-    auto legacy_v2 = empty.serialize();
-    legacy_v2[4] = 2; legacy_v2[5] = 0;  // LE FWNS version field
-    legacy_v2.pop_back();  // v2 had no presentation-active byte
-    if (!fw::ForeignWorldNativeState::deserialize(legacy_v2, &empty_restored, &error) ||
-        empty_restored.zelda1_presentation_active())
-        return fail("FWNS v2 did not restore as an inactive presentation: " + error);
+    auto legacy_v3 = empty.serialize();
+    // v4 adds a u32 music length immediately before the old lifecycle byte.
+    legacy_v3.erase(legacy_v3.end() - 5, legacy_v3.end() - 1);
+    legacy_v3[4] = 3; legacy_v3[5] = 0;
+    auto legacy_v2 = legacy_v3;
+    legacy_v2.pop_back();  // v2 had no presentation-active byte.
+    legacy_v2[4] = 2; legacy_v2[5] = 0;
+    auto legacy_v1 = legacy_v2;
+    legacy_v1.erase(legacy_v1.end() - 4, legacy_v1.end());  // no Z1OS size.
+    legacy_v1[4] = 1; legacy_v1[5] = 0;
+    for (const auto& legacy : {legacy_v1, legacy_v2, legacy_v3}) {
+        if (!fw::ForeignWorldNativeState::deserialize(legacy, &empty_restored, &error) ||
+            !empty_restored.zelda1_overworld_music_blob().empty() ||
+            empty_restored.zelda1_presentation_active())
+            return fail("FWNS v1-v3 did not migrate to empty music state: " + error);
+    }
     fw::ForeignWorldNativeState source;
     if (!populate(&source, &error)) return fail("could not build source: " + error);
     const fw::CrossWorldItemId native{fw::WorldId::Native, 7};
@@ -150,6 +179,8 @@ int test_native_state_and_provider_roundtrip() {
         restored.zelda1_overworld_session_blob()[9] != 1 ||
         restored.zelda1_overworld_session_blob()[11] != 1 ||
         restored.zelda1_overworld_session_blob()[16] != 0x78 ||
+        !same_bytes(restored.zelda1_overworld_music_blob(),
+                    source.zelda1_overworld_music_blob()) ||
         !restored.zelda1_presentation_active() ||
         restored.restore_generation() != 1)
         return fail("provider roundtrip lost inventory or world blob");
@@ -209,7 +240,37 @@ int test_native_state_and_provider_roundtrip() {
     if (fw::ForeignWorldNativeState::deserialize(corrupt_lifecycle,
                                                   &lifecycle_untouched, &error) ||
         lifecycle_untouched.serialize() != lifecycle_prior)
-        return fail("invalid FWNS v3 presentation lifecycle mutated state");
+        return fail("invalid FWNS v4 presentation lifecycle mutated state");
+
+    // The provider preflight must use the renderer's strict structural gate,
+    // and must not alter the installed native state or its restore generation.
+    const auto music = source.zelda1_overworld_music_blob();
+    const auto source_before_bad_checkpoint = source.serialize();
+    auto direct_corrupt_music = std::vector<std::uint8_t>(music.begin(), music.end());
+    direct_corrupt_music[37] = 7;
+    if (source.checkpoint_zelda1_overworld_music_blob(direct_corrupt_music, &error) ||
+        source.serialize() != source_before_bad_checkpoint)
+        return fail("corrupt Z1OM checkpoint mutated native state");
+    const auto music_it = std::search(saved.buffer().begin(), saved.buffer().end(),
+                                      music.begin(), music.end());
+    if (music_it == saved.buffer().end()) return fail("serialized Z1OM record absent");
+    auto corrupt_music = saved.buffer();
+    // Byte 37 is phrase_index in the fixed renderer record. A stopped record
+    // must use 8; 7 is structurally invalid and should fail before restore.
+    corrupt_music[static_cast<std::size_t>(music_it - saved.buffer().begin()) + 37] = 7;
+    fw::ForeignWorldNativeState music_untouched;
+    if (!populate(&music_untouched, &error)) return fail(error);
+    const auto music_prior = music_untouched.serialize();
+    gbarecomp::debug::ModStateRegistry music_registry;
+    if (!music_registry.register_provider(
+            fw::make_foreign_world_native_state_provider(music_untouched), &error))
+        return fail(error);
+    gbarecomp::debug::SnapshotReader music_reader(corrupt_music.data(),
+                                                   corrupt_music.size());
+    if (music_registry.preflight(music_reader, &error) ||
+        music_untouched.serialize() != music_prior ||
+        music_untouched.restore_generation() != 0)
+        return fail("corrupt Z1OM passed preflight or mutated provider state");
 
     const std::vector<std::uint8_t> marker = {'Z', '1', 'W', 'M'};
     const auto marker_it = std::search(saved.buffer().begin(), saved.buffer().end(),

@@ -242,6 +242,14 @@ public:
   }
   [[nodiscard]] const OwRoomGeometry &geometry() const { return geometry_; }
   [[nodiscard]] const Zelda1LiveFrameLoader &loader() const { return loader_; }
+  // The loader owns this immutable PRG for the full lifetime of a loaded
+  // session.  Consumers such as the host music renderer receive only this
+  // const, already canonical-iNES-validated view; they never reopen an asset
+  // path or accept an importer/cache payload.
+  [[nodiscard]] const VerifiedPrg* verified_prg() const {
+    const auto* data = loader_.first_quest_data();
+    return data ? &data->prg() : nullptr;
+  }
   [[nodiscard]] const Ow66OctorokRuntime &octoroks() const { return octoroks_; }
   bool tick_octoroks() {
     if (source_position_.room_id != 0x66 || !octoroks_.initialized()) return false;

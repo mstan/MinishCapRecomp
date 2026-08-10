@@ -8,6 +8,7 @@
 #include "foreign_worlds/foreign_world_native_state.h"
 
 #include "mod_function_hooks.h"
+#include "mod_audio.h"
 #include "mod_runtime.h"
 #include "runtime_arm.h"
 #include "foreign_screen_overlay.h"
@@ -53,6 +54,13 @@ unsigned g_bus_write_count = 0;
 bool g_background_publish_allowed = true;
 bool g_focus_publish_allowed = true;
 unsigned g_focus_rejections_remaining = 0;
+GBAModAudioStream g_audio_stream = GBA_MOD_AUDIO_STREAM_INVALID;
+GBAModAudioStreamReadCallback g_audio_read = nullptr;
+void* g_audio_context = nullptr;
+bool g_audio_enabled = false;
+bool g_audio_playing = false;
+unsigned g_audio_register_count = 0, g_audio_play_count = 0, g_audio_stop_count = 0;
+int g_audio_native_gain = 100;
 
 int fail(const std::string& message) {
     std::cerr << "FAIL: " << message << "\n";
@@ -352,6 +360,39 @@ extern "C" const char* gba_mod_required_asset_path(const char* package_id,
         return nullptr;
     return g_asset_path;
 }
+extern "C" GBAModAudioStream gba_mod_audio_stream_register_s16_mono(
+    GBAModAudioStreamReadCallback read, void* context) {
+    if (!read || !context) return GBA_MOD_AUDIO_STREAM_INVALID;
+    g_audio_stream = 0x5a17c0deu;
+    g_audio_read = read;
+    g_audio_context = context;
+    ++g_audio_register_count;
+    return g_audio_stream;
+}
+extern "C" int gba_mod_audio_stream_set_enabled(GBAModAudioStream stream, int enabled) {
+    if (stream != g_audio_stream) return 0;
+    g_audio_enabled = enabled != 0;
+    if (!g_audio_enabled) g_audio_playing = false;
+    return 1;
+}
+extern "C" int gba_mod_audio_stream_play(GBAModAudioStream stream, int) {
+    if (stream != g_audio_stream || !g_audio_enabled) return 0;
+    g_audio_playing = true;
+    ++g_audio_play_count;
+    return 1;
+}
+extern "C" int gba_mod_audio_stream_stop(GBAModAudioStream stream) {
+    if (stream != g_audio_stream) return 0;
+    g_audio_playing = false;
+    ++g_audio_stop_count;
+    return 1;
+}
+extern "C" int gba_mod_audio_stream_set_native_gain_percent(
+    GBAModAudioStream stream, int gain_percent) {
+    if (stream != g_audio_stream || gain_percent < 0 || gain_percent > 100) return 0;
+    g_audio_native_gain = gain_percent;
+    return 1;
+}
 extern "C" std::uint8_t bus_read_u8(std::uint32_t address) {
     switch (address) {
     case 0x03000BF4: return g_area;
@@ -483,6 +524,44 @@ int main(int argc, char** argv) {
         return fail("contact portal auto-entered instead of waiting for a crossing");
     if (!enter_portal(&observe_cpu))
         return fail("safe outside-to-inside contact did not enter Zelda");
+    if (g_audio_register_count == 0 || !g_audio_read || !g_audio_context ||
+        !g_audio_playing || g_audio_native_gain != 0)
+        return fail("foreign entry did not activate the bounded Zelda music stream and mute native PCM");
+    const auto plays_after_entry = g_audio_play_count;
+    const auto writes_before_music_pull = g_bus_write_count;
+    std::array<std::int16_t, GBA_MOD_AUDIO_MAX_STREAM_CALLBACK_FRAMES> music_pull{};
+    if (g_audio_read(g_audio_context, music_pull.data(), music_pull.size()) !=
+        music_pull.size() ||
+        g_audio_read(g_audio_context, music_pull.data(), music_pull.size()) !=
+        music_pull.size() ||
+        std::all_of(music_pull.begin(), music_pull.end(),
+                    [](std::int16_t sample) { return sample == 0; }) ||
+        g_bus_write_count != writes_before_music_pull ||
+        minish::foreign_world::foreign_world_native_state()
+            .zelda1_overworld_music_blob().size() != 79)
+        return fail("music pull was not bounded/checkpointed or touched guest state");
+    // The relocated UpdateEntities observer must not start a duplicate voice
+    // for the same source frame.
+    (void)gba_mod_function_entry(0x03005F40u, 0, &observe_cpu);
+    if (g_audio_play_count != plays_after_entry)
+        return fail("duplicate source callback restarted the Zelda music stream");
+    const auto stops_before_pause = g_audio_stop_count;
+    (void)gba_mod_function_entry(0x080A4D88u, 1, &observe_cpu);
+    if (g_audio_playing || g_audio_native_gain != 100 ||
+        g_audio_stop_count != stops_before_pause + 1)
+        return fail("Start menu did not suspend Zelda audio and restore native PCM");
+    const auto paused_music = minish::foreign_world::foreign_world_native_state()
+        .zelda1_overworld_music_blob();
+    // Z1OM encodes paused after two 8-byte pulse states, the 12-byte triangle
+    // state, and the 7-byte noise state.  Check the persisted pause transport
+    // rather than only the fake delivery voice.
+    if (paused_music.size() != 79 || paused_music[35] != 1)
+        return fail("Start menu did not checkpoint paused Zelda music transport");
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (!g_audio_playing || g_audio_native_gain != 0 ||
+        g_audio_play_count != plays_after_entry + 1)
+        return fail("closing Start menu did not resume the same Zelda music transport");
     // Entry must not need a pause/menu round-trip before the very next held
     // D-pad sample moves the virtual Zelda player.
     const auto contact_entry_focus = *g_foreign_focus;
@@ -1046,6 +1125,15 @@ int main(int argc, char** argv) {
     (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
     if (!g_foreign_background || g_foreign_background == overworld_pixels_before_level)
         return fail("3px source roll tunneled past exact OW37 Level-1 entrance");
+    if (g_audio_playing || g_audio_native_gain != 100)
+        return fail("Level 1 did not stop overworld music and restore native audio");
+    // A Start round trip must preserve that explicit Level-1 audio policy;
+    // it must not interpret the compositor re-publication as OW/cave resume.
+    (void)gba_mod_function_entry(0x080A4D88u, 1, &observe_cpu);
+    ++g_frame;
+    (void)gba_mod_function_entry(0x0805E5C0u, 1, &observe_cpu);
+    if (g_audio_playing || g_audio_native_gain != 100)
+        return fail("Level-1 Start round trip incorrectly restarted overworld music");
     // Mirror the cave proof for the exact OW37 ($70,$7d) source entrance:
     // a released D-pad still takes the Level 1 doorway during CheckWarps.
     std::array<std::uint8_t, z1::Zelda1OverworldSession::kSerializedSize> level_stationary{};
@@ -1450,7 +1538,8 @@ int main(int argc, char** argv) {
         minish::foreign_world::foreign_world_native_state().zelda1_presentation_active())
         return fail("explicit chord could not leave restore-frozen Zelda presentation");
     z1::reset_smith_yard_readiness_plugin();
-    if (g_foreign_background || g_foreign_focus)
+    if (g_foreign_background || g_foreign_focus || g_audio_playing ||
+        g_audio_native_gain != 100)
         return fail("plugin lifecycle reset did not clear foreign presentation");
     std::cout << "Smith-yard plugin actual-ROM mode/focus/CPU routing passed\n";
     return 0;

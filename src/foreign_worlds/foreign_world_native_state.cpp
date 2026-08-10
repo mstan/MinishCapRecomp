@@ -11,14 +11,20 @@ namespace minish::foreign_world {
 namespace {
 
 constexpr std::array<std::uint8_t, 4> kStateMagic{'F', 'W', 'N', 'S'};
-constexpr std::uint16_t kStateVersion = 3;
+constexpr std::uint16_t kStateVersion = 4;
 constexpr char kProviderId[] = "minish.foreign-world";
+// FWNS has its own tagged/migratable record, so retain the provider catalog
+// schema. Bumping this value would make the engine reject v1-v3 snapshots
+// before deserialize can perform the documented migration.
 constexpr std::uint32_t kProviderSchema = 3;
 static_assert(kZelda1WorldBlobBytes == zelda1::Zelda1WorldModel::kSerializedSize,
               "native persistence must track the live Z1WM record size");
 static_assert(kZelda1OverworldSessionBlobBytes ==
                   zelda1::Zelda1OverworldSession::kSerializedSize,
               "native persistence must track the live Z1OS record size");
+static_assert(kZelda1OverworldMusicBlobBytes ==
+                  zelda1::Zelda1OverworldMusicRenderer::kSerializedSize,
+              "native persistence must track the live Zelda music record size");
 
 void set_error(std::string* error, const char* message) {
     if (error) *error = message;
@@ -90,6 +96,16 @@ bool valid_zelda_overworld_session_blob(std::span<const std::uint8_t> blob,
     return true;
 }
 
+bool valid_zelda_overworld_music_blob(std::span<const std::uint8_t> blob,
+                                      std::string* error) {
+    if (blob.size() != kZelda1OverworldMusicBlobBytes ||
+        !zelda1::Zelda1OverworldMusicRenderer::validate_serialized(blob)) {
+        set_error(error, "foreign overworld music blob is not a valid Z1OM record");
+        return false;
+    }
+    return true;
+}
+
 bool provider_save(void* user, gbarecomp::debug::SnapshotWriter& out,
                    std::string*) {
     const auto* state = static_cast<ForeignWorldNativeState*>(user);
@@ -134,6 +150,19 @@ bool ForeignWorldNativeState::set_zelda1_overworld_session_blob(
     return true;
 }
 
+bool ForeignWorldNativeState::set_zelda1_overworld_music_blob(
+    std::span<const std::uint8_t> blob, std::string* error) {
+    return checkpoint_zelda1_overworld_music_blob(blob, error);
+}
+
+bool ForeignWorldNativeState::checkpoint_zelda1_overworld_music_blob(
+    std::span<const std::uint8_t> blob, std::string* error) {
+    if (!valid_zelda_overworld_music_blob(blob, error)) return false;
+    std::copy(blob.begin(), blob.end(), zelda1_overworld_music_blob_.begin());
+    zelda1_overworld_music_blob_present_ = true;
+    return true;
+}
+
 void ForeignWorldNativeState::replace_after_provider_restore(
     ForeignWorldNativeState&& restored) {
     const auto next_generation = restore_generation_ + 1;
@@ -141,6 +170,9 @@ void ForeignWorldNativeState::replace_after_provider_restore(
     zelda1_world_blob_ = std::move(restored.zelda1_world_blob_);
     zelda1_overworld_session_blob_ =
         std::move(restored.zelda1_overworld_session_blob_);
+    zelda1_overworld_music_blob_ = restored.zelda1_overworld_music_blob_;
+    zelda1_overworld_music_blob_present_ =
+        restored.zelda1_overworld_music_blob_present_;
     zelda1_presentation_active_ = restored.zelda1_presentation_active_;
     restore_generation_ = next_generation;
 }
@@ -150,7 +182,9 @@ std::vector<std::uint8_t> ForeignWorldNativeState::serialize() const {
     std::vector<std::uint8_t> bytes;
     bytes.reserve(4 + 2 + 4 + inventory_bytes.size() + 4 +
                   zelda1_world_blob_.size() + 4 +
-                  zelda1_overworld_session_blob_.size() + 1);
+                  zelda1_overworld_session_blob_.size() + 4 +
+                  (zelda1_overworld_music_blob_present_ ?
+                       zelda1_overworld_music_blob_.size() : 0) + 1);
     bytes.insert(bytes.end(), kStateMagic.begin(), kStateMagic.end());
     append_u16(&bytes, kStateVersion);
     append_u32(&bytes, static_cast<std::uint32_t>(inventory_bytes.size()));
@@ -161,6 +195,12 @@ std::vector<std::uint8_t> ForeignWorldNativeState::serialize() const {
                static_cast<std::uint32_t>(zelda1_overworld_session_blob_.size()));
     bytes.insert(bytes.end(), zelda1_overworld_session_blob_.begin(),
                  zelda1_overworld_session_blob_.end());
+    append_u32(&bytes,
+               zelda1_overworld_music_blob_present_ ?
+                   static_cast<std::uint32_t>(zelda1_overworld_music_blob_.size()) : 0);
+    if (zelda1_overworld_music_blob_present_)
+        bytes.insert(bytes.end(), zelda1_overworld_music_blob_.begin(),
+                     zelda1_overworld_music_blob_.end());
     bytes.push_back(zelda1_presentation_active_ ? 1 : 0);
     return bytes;
 }
@@ -177,10 +217,11 @@ bool ForeignWorldNativeState::deserialize(std::span<const std::uint8_t> bytes,
         }
     }
     std::uint16_t version;
-    std::uint32_t inventory_size, world_size, overworld_size = 0;
+    std::uint32_t inventory_size, world_size, overworld_size = 0, music_size = 0;
     std::uint8_t presentation_active = 0;
-    std::vector<std::uint8_t> inventory_bytes, world_bytes, overworld_bytes;
-    if (!reader.u16(&version) || (version != 1 && version != 2 && version != kStateVersion) ||
+    std::vector<std::uint8_t> inventory_bytes, world_bytes, overworld_bytes, music_bytes;
+    if (!reader.u16(&version) ||
+        (version != 1 && version != 2 && version != 3 && version != kStateVersion) ||
         !reader.u32(&inventory_size) || inventory_size > bytes.size() ||
         !reader.bytes(inventory_size, &inventory_bytes) ||
         !reader.u32(&world_size) || world_size > kZelda1WorldBlobBytes ||
@@ -189,7 +230,11 @@ bool ForeignWorldNativeState::deserialize(std::span<const std::uint8_t> bytes,
          (!reader.u32(&overworld_size) ||
           overworld_size > kZelda1OverworldSessionBlobBytes ||
           !reader.bytes(overworld_size, &overworld_bytes))) ||
-        (version == kStateVersion &&
+        (version >= 4 &&
+         (!reader.u32(&music_size) ||
+          music_size > kZelda1OverworldMusicBlobBytes ||
+          !reader.bytes(music_size, &music_bytes))) ||
+        (version >= 3 &&
          (!reader.u8(&presentation_active) || presentation_active > 1)) ||
         !reader.at_end()) {
         set_error(error, "foreign native state is truncated or malformed"); return false;
@@ -199,6 +244,9 @@ bool ForeignWorldNativeState::deserialize(std::span<const std::uint8_t> bytes,
     if (!world_bytes.empty() && !parsed.set_zelda1_world_blob(world_bytes, error)) return false;
     if (!overworld_bytes.empty() &&
         !parsed.set_zelda1_overworld_session_blob(overworld_bytes, error))
+        return false;
+    if (!music_bytes.empty() &&
+        !parsed.set_zelda1_overworld_music_blob(music_bytes, error))
         return false;
     parsed.zelda1_presentation_active_ = presentation_active != 0;
     *output = std::move(parsed);

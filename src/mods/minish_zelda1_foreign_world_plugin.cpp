@@ -7,12 +7,15 @@
 #include "foreign_worlds/zelda1/minish_linear_move_adapter.h"
 #include "foreign_worlds/zelda1/minish_portal_readiness.h"
 #include "foreign_worlds/zelda1/zelda1_level1_live_adapter.h"
+#include "foreign_worlds/zelda1/zelda1_overworld_music.h"
 #include "foreign_worlds/zelda1/zelda1_overworld_session.h"
 
 #include <string>
 #include <array>
+#include <span>
 
 #include "foreign_screen_overlay.h"
+#include "mod_audio.h"
 #include "mod_function_hooks.h"
 #include "mod_runtime.h"
 #include "runtime_arm.h"
@@ -112,6 +115,8 @@ bool g_foreign_menu_suspended = false;
 bool g_foreign_survival_safe = false;
 Zelda1OverworldSession g_overworld_session;
 Zelda1Level1LiveAdapter g_level1_adapter;
+Zelda1OverworldMusicRenderer g_overworld_music;
+GBAModAudioStream g_overworld_music_stream = GBA_MOD_AUDIO_STREAM_INVALID;
 ForeignObjFocusDoubleBuffer g_obj_focus;
 ActiveLowButtonEdge g_cave_a_edge;
 ActiveLowButtonEdge g_combat_a_edge;
@@ -148,6 +153,61 @@ bool g_foreign_session_frozen = false;
 const std::uint16_t* g_last_published_background = nullptr;
 const GbaForeignObjFocusTransform* g_last_published_focus = nullptr;
 std::uint64_t g_seen_native_restore_generation = 0;
+
+std::size_t read_zelda1_overworld_music(void* context, std::int16_t* dst,
+                                        std::size_t max_frames) {
+    auto* music = static_cast<Zelda1OverworldMusicRenderer*>(context);
+    if (!music || !dst || max_frames == 0 ||
+        max_frames > GBA_MOD_AUDIO_MAX_STREAM_CALLBACK_FRAMES)
+        return 0;
+    // The engine invokes this only from its producer thread. `render` is
+    // bounded/no-allocation; serialization is fixed-size and the native-state
+    // checkpoint API copies to fixed storage without guest access or locks.
+    music->render(std::span<std::int16_t>(dst, max_frames));
+    const auto checkpoint = music->serialize();
+    (void)foreign_world_native_state().checkpoint_zelda1_overworld_music_blob(
+        checkpoint, nullptr);
+    return max_frames;
+}
+
+void stop_zelda1_overworld_music(bool reset_transport) {
+    if (g_overworld_music_stream != GBA_MOD_AUDIO_STREAM_INVALID) {
+        (void)gba_mod_audio_stream_stop(g_overworld_music_stream);
+        (void)gba_mod_audio_stream_set_native_gain_percent(
+            g_overworld_music_stream, 100);
+    }
+    if (reset_transport)
+        g_overworld_music.reset();
+    else
+        g_overworld_music.set_paused(true);
+    if (g_overworld_music.ready()) {
+        const auto checkpoint = g_overworld_music.serialize();
+        (void)foreign_world_native_state().checkpoint_zelda1_overworld_music_blob(
+            checkpoint, nullptr);
+    }
+}
+
+bool play_zelda1_overworld_music(bool reset_transport) {
+    if (g_overworld_music_stream == GBA_MOD_AUDIO_STREAM_INVALID ||
+        !g_overworld_music.ready() || g_level1_adapter.active())
+        return false;
+    if (reset_transport) g_overworld_music.reset();
+    g_overworld_music.set_paused(false);
+    if (gba_mod_audio_stream_set_enabled(g_overworld_music_stream, 1) == 0 ||
+        gba_mod_audio_stream_set_native_gain_percent(
+            g_overworld_music_stream, 0) == 0 ||
+        gba_mod_audio_stream_play(g_overworld_music_stream, 100) == 0) {
+        (void)gba_mod_audio_stream_stop(g_overworld_music_stream);
+        (void)gba_mod_audio_stream_set_native_gain_percent(
+            g_overworld_music_stream, 100);
+        return false;
+    }
+    // Make a deterministic save point even before the first producer pull.
+    const auto checkpoint = g_overworld_music.serialize();
+    (void)foreign_world_native_state().checkpoint_zelda1_overworld_music_blob(
+        checkpoint, nullptr);
+    return true;
+}
 
 std::int16_t read_guest_s16(std::uint32_t address) {
     return static_cast<std::int16_t>(bus_read_u16(address));
@@ -319,6 +379,13 @@ void enter_qa_video() {
     g_qa_video_active = publish_current_foreign_video();
     g_foreign_menu_suspended = false;
     foreign_world_native_state().set_zelda1_presentation_active(g_qa_video_active);
+    // A portal is a fresh world-entry boundary.  Caves deliberately retain
+    // this song, while Level 1 explicitly owns no translated underworld tune
+    // yet and therefore restores native audio instead (see entrance seam).
+    if (g_qa_video_active && !play_zelda1_overworld_music(true)) {
+        g_qa_video_active = false;
+        foreign_world_native_state().set_zelda1_presentation_active(false);
+    }
     // No foreign PPU pair was committed on this entry attempt, so this is
     // activation-before-entry failure handling rather than a fallback from an
     // active Zelda session. Active publication failures freeze instead.
@@ -331,6 +398,7 @@ void leave_qa_video(bool reset_trigger) {
     // boundary so ANIM_SWORD can never remain in PlayerState after a host
     // swing is gone. Reset is special: its new guest bus is already blank.
     restore_player_sword_animation_if_pending();
+    stop_zelda1_overworld_music(true);
     gba_mod_clear_foreign_obj_focus();
     gba_mod_clear_foreign_background();
     g_qa_video_active = false;
@@ -388,6 +456,7 @@ int observe_init_pause_menu(std::uint32_t, int, ArmCpuState*) {
         return 0;
     gba_mod_clear_foreign_obj_focus();
     gba_mod_clear_foreign_background();
+    stop_zelda1_overworld_music(false);
     g_qa_video_active = false;
     g_foreign_menu_suspended = true;
     // Presentation activity is persisted with the foreign session.  A native
@@ -426,6 +495,16 @@ bool apply_pending_native_restore() {
     if (blob.empty()) return false;
     std::string error;
     if (!g_overworld_session.restore(blob, &error)) return false;
+    stop_zelda1_overworld_music(false);
+    const auto music_blob = native.zelda1_overworld_music_blob();
+    if (!music_blob.empty()) {
+        if (!g_overworld_music.restore(music_blob, &error)) return false;
+    } else {
+        // FWNS v1-v3 has no music transport.  It resumes a visible foreign
+        // world with a source-authentic fresh overworld tune, never guessed
+        // oscillator state.
+        g_overworld_music.reset();
+    }
     // The native record currently owns the OW session only.  Never carry a
     // newer in-memory Level 1 child across that snapshot boundary.
     g_level1_adapter.reset();
@@ -576,8 +655,14 @@ bool observe_overworld_entrance() {
     if (g_overworld_session.try_enter_cave() ==
         OverworldSessionCaveResult::kEntered)
         return true;
-    return g_level1_adapter.try_enter_from_overworld(g_overworld_session) ==
-        Level1LiveResult::kEntered;
+    if (g_level1_adapter.try_enter_from_overworld(g_overworld_session) !=
+        Level1LiveResult::kEntered)
+        return false;
+    // Scope is intentionally overworld plus caves only.  Do not play the
+    // overworld tune in Level 1; until its source song is translated, native
+    // Minish audio is restored rather than presenting a mismatched track.
+    stop_zelda1_overworld_music(false);
+    return true;
 }
 
 // Performs exactly one host-side Zelda movement pixel.  This is deliberately
@@ -596,6 +681,14 @@ bool move_foreign_one_pixel(std::int16_t dx, std::int16_t dy) {
         if (result == Level1LiveResult::kInvalid ||
             result == Level1LiveResult::kInventoryRejected) {
             freeze_active_foreign_session();
+            return false;
+        }
+        if (result == Level1LiveResult::kReturned) {
+            // The adapter has returned to its source OW room and made the
+            // child inactive.  A return starts the documented overworld tune
+            // anew; it cannot resume stale transport from a different area.
+            if (!play_zelda1_overworld_music(true))
+                freeze_active_foreign_session();
             return false;
         }
         if (result != Level1LiveResult::kMoved) return false;
@@ -741,6 +834,15 @@ int observe_update_entities(std::uint32_t, int, ArmCpuState*) {
                 publish_current_foreign_video()) {
                 g_qa_video_active = true;
                 g_foreign_menu_suspended = false;
+                // Level 1 deliberately has no translated song in this
+                // release. Its previously restored native-audio policy must
+                // survive a Start round trip; only OW/cave resumes `$01`.
+                if (!g_level1_adapter.active() &&
+                    !play_zelda1_overworld_music(false)) {
+                    g_qa_video_active = false;
+                    freeze_active_foreign_session();
+                    return 0;
+                }
                 // A successful re-publication is the menu-close lifecycle
                 // boundary: resume the same logical Zelda lease rather than
                 // retaining an error freeze from a rejected retry.
@@ -827,6 +929,11 @@ int observe_update_entities(std::uint32_t, int, ArmCpuState*) {
             if (survival_safe) {
                 if (publish_current_foreign_video()) {
                     g_qa_video_active = true;
+                    if (!g_level1_adapter.active() &&
+                        !play_zelda1_overworld_music(false)) {
+                        g_qa_video_active = false;
+                        freeze_active_foreign_session();
+                    }
                 } else {
                     // Preserve the active lease even if a restored frame
                     // cannot publish. The cached PPU pair (if any) remains
@@ -999,6 +1106,12 @@ int replace_player_linear_move(std::uint32_t, int, ArmCpuState* cpu) {
 }  // namespace
 
 void reset_smith_yard_readiness_plugin() {
+    // Runtime reset invalidates activation-scoped stream capabilities before
+    // this callback.  Best-effort stop/gain restoration keeps the unit-harness
+    // contract explicit too, then discard the stale opaque handle.
+    stop_zelda1_overworld_music(true);
+    g_overworld_music_stream = GBA_MOD_AUDIO_STREAM_INVALID;
+    g_overworld_music = {};
     g_asset_available = false;
     g_tracker.reset();
     g_portal_tracker.reset();
@@ -1057,6 +1170,11 @@ void activate_smith_yard_readiness_plugin() {
     const char* asset_path = gba_mod_required_asset_path(
         kZelda1ForeignWorldPackageId, kZelda1ForeignWorldAssetId);
     g_asset_available = false;
+    stop_zelda1_overworld_music(true);
+    g_overworld_music_stream = GBA_MOD_AUDIO_STREAM_INVALID;
+    // Renderer borrows the session loader's immutable PRG span.  Clear it
+    // before replacing the session on every activation/failure path.
+    g_overworld_music = {};
     g_overworld_session = {};
     g_level1_adapter.reset();
     g_host_sword_swing.reset();
@@ -1083,15 +1201,49 @@ void activate_smith_yard_readiness_plugin() {
         (void)gba_mod_set_function_hook_enabled(kZelda1ForeignWorldPluginId, 0);
         return;
     }
+    const auto* verified_prg = g_overworld_session.verified_prg();
+    if (!verified_prg || !g_overworld_music.bind_verified_prg(*verified_prg, &error)) {
+        g_overworld_music = {};
+        g_overworld_session = {};
+        (void)gba_mod_set_function_hook_enabled(kZelda1ForeignWorldPluginId, 0);
+        return;
+    }
+    // This call is deliberately inside the committed activation callback.
+    // The runtime returns an opaque capability only in that scope, preventing
+    // arbitrary plugin code from hijacking the one host stream voice.
+    g_overworld_music_stream = gba_mod_audio_stream_register_s16_mono(
+        read_zelda1_overworld_music, &g_overworld_music);
+    if (g_overworld_music_stream == GBA_MOD_AUDIO_STREAM_INVALID ||
+        gba_mod_audio_stream_set_enabled(g_overworld_music_stream, 1) == 0) {
+        stop_zelda1_overworld_music(true);
+        g_overworld_music_stream = GBA_MOD_AUDIO_STREAM_INVALID;
+        g_overworld_music = {};
+        g_overworld_session = {};
+        (void)gba_mod_set_function_hook_enabled(kZelda1ForeignWorldPluginId, 0);
+        return;
+    }
     auto& native = foreign_world_native_state();
     const auto& saved_session = native.zelda1_overworld_session_blob();
     if (!saved_session.empty()) {
         if (!g_overworld_session.restore(saved_session, &error)) {
+            stop_zelda1_overworld_music(true);
+            g_overworld_music = {};
             g_overworld_session = {};
             (void)gba_mod_set_function_hook_enabled(kZelda1ForeignWorldPluginId, 0);
             return;
         }
     } else if (!sync_live_overworld_session()) {
+        stop_zelda1_overworld_music(true);
+        g_overworld_music = {};
+        g_overworld_session = {};
+        (void)gba_mod_set_function_hook_enabled(kZelda1ForeignWorldPluginId, 0);
+        return;
+    }
+    const auto saved_music = native.zelda1_overworld_music_blob();
+    if (!saved_music.empty() && !g_overworld_music.restore(saved_music, &error)) {
+        stop_zelda1_overworld_music(true);
+        g_overworld_music_stream = GBA_MOD_AUDIO_STREAM_INVALID;
+        g_overworld_music = {};
         g_overworld_session = {};
         (void)gba_mod_set_function_hook_enabled(kZelda1ForeignWorldPluginId, 0);
         return;
