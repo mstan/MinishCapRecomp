@@ -22,7 +22,17 @@ saves/
 # (names + addresses; no C source enters the build). License
 # obligations stay with the upstream checkout.
 # ─────────────────────────────────────────────────────────────────────
-third_party/
+# zeldaret/tmc is a tracked SUBMODULE at third_party/tmc — it pins the
+# exact upstream revision whose build reproduces this project's ROM, which
+# is what makes its symbol addresses meaningful here. It is provenance
+# only: no decomp source enters the build (tools/decomp/import-symbols.sh
+# reads names, addresses and sizes out of a WSL-side build). Note the glob:
+# a bare `third_party/` excludes the DIRECTORY, and git cannot re-include a
+# path underneath an excluded directory, so the !third_party/tmc negation
+# would never take effect. Everything else here stays ignored (agbcc
+# installs, build sandboxes, large dumps).
+third_party/*
+!third_party/tmc
 
 # ─────────────────────────────────────────────────────────────────────
 # Build output
@@ -124,3 +134,12 @@ memory/
 
 # Scratch output from tools/repro_hang.py (screenshots, stderr dumps)
 tools/repro_out/
+
+# Decomp symbol-import INPUTS: the bulky readelf dumps tools/decomp/import-symbols.sh
+# captures from the pinned decomp build. Regenerable and large; the small
+# reviewable OUTPUTS (symbols/*.tsv, symbols/<ID>_symbols.toml) and the
+# <decomp>_revision.txt provenance stamp stay tracked.
+symbols/*_syms.txt
+symbols/*_sections.txt
+variants/*/symbols/*_syms.txt
+variants/*/symbols/*_sections.txt

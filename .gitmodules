@@ -4,3 +4,6 @@
 [submodule "gbarecomp"]
 	path = gbarecomp
 	url = https://github.com/mstan/gbarecomp.git
+[submodule "third_party/tmc"]
+	path = third_party/tmc
+	url = https://github.com/zeldaret/tmc
