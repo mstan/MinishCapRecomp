@@ -223,6 +223,11 @@ cmake --build build --target MinishCapRecomp
 The recompiler emits deterministic parallel translation units; current
 gbarecomp also rejects the retired monolithic `recompiled.cpp` output.
 
+## License
+
+PolyForm Noncommercial 1.0.0 — see [`LICENSE`](LICENSE). Third-party
+components retain their own licenses.
+
 ## Legal
 
 This project contains **no copyrighted ROM data, no Nintendo BIOS, and no decomp
