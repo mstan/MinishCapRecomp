@@ -29,15 +29,32 @@ Usage: powershell -File tools\make_release.ps1 -Version 0.0.2
 #>
 param(
   [Parameter(Mandatory = $true)][string]$Version,
-  [string]$BuildDir = 'build-release'
+  [string]$BuildDir = 'build-release',
+  [string]$OutputDir = 'release-stage',
+  [string]$EngineRoot = '',
+  [string]$RecompUiRoot = '',
+  [string]$GeneratedBiosDir = '',
+  [ValidateRange(1,32)][int]$Jobs = 2,
+  [switch]$SkipBuild
 )
 $ErrorActionPreference = 'Stop'
 
 $MingwBin = 'C:\msys64\mingw64\bin'
 $env:PATH = "$MingwBin;$env:PATH"
 $root  = Split-Path -Parent $PSScriptRoot
-$build = Join-Path $root $BuildDir
-$out   = Join-Path $root 'release-stage'
+$build = if ([IO.Path]::IsPathRooted($BuildDir)) { [IO.Path]::GetFullPath($BuildDir) } else { Join-Path $root $BuildDir }
+$out = if ([IO.Path]::IsPathRooted($OutputDir)) { [IO.Path]::GetFullPath($OutputDir) } else { Join-Path $root $OutputDir }
+if (-not $EngineRoot) { $EngineRoot=Join-Path $root 'gbarecomp' }
+if (-not $RecompUiRoot) { $RecompUiRoot=Join-Path $root 'recomp-ui' }
+$engine=(Resolve-Path -LiteralPath $EngineRoot).Path
+$ui=(Resolve-Path -LiteralPath $RecompUiRoot).Path
+if (-not $GeneratedBiosDir) { $GeneratedBiosDir=Join-Path $engine 'src/runtime/generated_bios' }
+foreach ($entry in @(@('gbarecomp',$engine),@('recomp-ui',$ui))) {
+  $pin=((git -C $root ls-tree HEAD $entry[0]) -split '\s+')[2]
+  if ((git -C $entry[1] rev-parse HEAD).Trim() -ne $pin) { throw "$($entry[0]) differs from title pin $pin" }
+  if (git -C $entry[1] status --porcelain --untracked-files=no --ignore-submodules=all) { throw "$($entry[0]) has uncommitted tracked changes" }
+}
+$Cmake=Join-Path $MingwBin 'cmake.exe'
 New-Item -ItemType Directory -Force $out | Out-Null
 
 # Single-game repo. game.toml is at the repo root (no variants/ layout).
@@ -51,12 +68,14 @@ $dlls = @('SDL2.dll', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.
 # through the msys2 mingw64 prefix - passed explicitly so a fresh checkout
 # configures without relying on auto-detection.
 if (-not (Test-Path (Join-Path $build 'CMakeCache.txt'))) {
-  & cmake -S $root -B $build -G Ninja `
+  & $Cmake -S $root -B $build -G Ninja `
       -DCMAKE_C_COMPILER="$MingwBin/cc.exe" `
       -DCMAKE_CXX_COMPILER="$MingwBin/c++.exe" `
       -DCMAKE_MAKE_PROGRAM="$MingwBin/ninja.exe" `
       -DCMAKE_BUILD_TYPE=Release "-DCMAKE_CXX_FLAGS_RELEASE=-O1 -DNDEBUG" `
       -DGBARECOMP_BUILD_ORACLE=OFF `
+      "-DGBARECOMP_ROOT=$engine" "-DRECOMP_UI_ROOT=$ui" `
+      "-DGBARECOMP_RUNTIME_UI_ROOT=$ui" "-DGBARECOMP_GENERATED_BIOS_DIR=$GeneratedBiosDir" `
       -DMINISH_ENABLE_ZELDA1_FOREIGN_WORLD=OFF `
       -DGBARECOMP_MINGW_PREFIX_UNIX="/c/msys64/mingw64" `
       -DSDL2_INCLUDE_DIR="C:/msys64/mingw64/include/SDL2" `
@@ -71,19 +90,23 @@ if (-not $hiddenGate) {
 
 foreach ($g in $games) {
   $target = $g.Target
-  & cmake --build $build --target $target
-  if ($LASTEXITCODE -ne 0) { throw "build failed for $target ($LASTEXITCODE)" }
+  if (-not $SkipBuild) {
+    & $Cmake --build $build --target $target --parallel $Jobs
+    if ($LASTEXITCODE -ne 0) { throw "build failed for $target ($LASTEXITCODE)" }
+  }
 
   $exe = Join-Path $build "$target.exe"
   if (-not (Test-Path $exe)) { throw "expected exe missing: $exe" }
-  & "$MingwBin\strip.exe" $exe
 
   $stageName = "$target-windows-x64-v$Version"
   $stage = Join-Path $out $stageName
-  if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+  if (Test-Path -LiteralPath $stage) { throw "Release stage already exists: $stage" }
   New-Item -ItemType Directory -Force $stage | Out-Null
 
   Copy-Item $exe $stage
+  & "$MingwBin\strip.exe" (Join-Path $stage "$target.exe")
+  if ($LASTEXITCODE -ne 0) { throw 'strip failed' }
+  Copy-Item -LiteralPath (Join-Path $engine 'tools/CaptureDiagnostics.cmd') -Destination $stage
   foreach ($d in $dlls) { Copy-Item (Join-Path $MingwBin $d) $stage }
 
   # recomp-ui launcher assets (fonts + img TGAs), staged next to the exe by
@@ -112,8 +135,7 @@ foreach ($g in $games) {
   # Bundle the self-contained tcc overlay toolchain (TinyCC + overlay shim
   # headers) next to the exe so a toolchain-less player box self-heals overlay
   # gaps via tcc (overlay backend auto -> tcc). See gbarecomp/tools/fetch_tcc.ps1.
-  $engine = (Resolve-Path (Join-Path $PSScriptRoot '..\gbarecomp')).Path
-  & (Join-Path $engine 'tools\fetch_tcc.ps1') -Toolchain (Join-Path $stage 'overlay_toolchain') -EngineRoot $engine
+  & (Join-Path $engine 'tools\fetch_tcc.ps1') -Toolchain (Join-Path $stage 'overlay_toolchain') -EngineRoot $engine -CacheDir (Join-Path $out '.toolchain-cache')
 
   # ROM SHA-1 from game.toml (best-effort; for the README only).
   $sha = ''
@@ -143,18 +165,22 @@ Static recompilation turns the game's ARM7TDMI code into native C++ (via the
    Settings, key rebinds, and hotkeys persist in ``config.ini`` /
    ``keybinds.ini`` next to the exe; the picked paths are cached to
    ``rom.cfg`` / ``bios.cfg``; save data lands next to your ROM.
-   Open **Mods** to enable the disabled-by-default **Adaptive Widescreen**
-   feature.
+   Fresh installations enable **Adaptive Widescreen**, following the window's
+   aspect ratio. Existing saved mod choices are retained.
    (``--no-launcher`` boots straight to the game; "Skip launcher on boot"
    in the launcher does the same persistently, ``--launcher`` brings it back.)
 
 The ROM and BIOS are **never** redistributed - supply your own dumps.
 
+For a launcher or controller problem, run ``CaptureDiagnostics.cmd`` and close
+the launcher normally. It writes ``launcher-diagnostics.log`` and
+``controller-input.jsonl`` beside the game; no ROM is needed for controller capture.
+
 See the GitHub release notes for what changed in v$Version.
 "@ | Out-File (Join-Path $stage 'README.md') -Encoding utf8
 
   $zip = Join-Path $out "$stageName.zip"
-  if (Test-Path $zip) { Remove-Item -Force $zip }
+  if (Test-Path -LiteralPath $zip) { throw "Release archive already exists: $zip" }
   Add-Type -AssemblyName System.IO.Compression
   Add-Type -AssemblyName System.IO.Compression.FileSystem
 

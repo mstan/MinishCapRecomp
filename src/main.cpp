@@ -64,6 +64,7 @@ int main(int argc, char** argv) {
     // without a sibling game.toml. The picker still validates against
     // these values; CLI / TOML can override.
     gbarecomp::RunOptions opts;
+    opts.launcher_native_save_bytes = 8192;
     opts.builtin_game_name  = "The Legend of Zelda: The Minish Cap";
     opts.builtin_rom_sha1   = "b4bd50e4131b027c334547b4524e2dbbd4227130";
     // CRC32 of the pinned USA ROM (same dump the SHA-1 above gates on).
