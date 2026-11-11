@@ -75,6 +75,7 @@ int main(int argc, char** argv) {
     opts.mod_owns_adaptive_view = true;
     // The adaptive-view implementation remains game-owned, but its activation
     // is now authoritative in Mods rather than the generic Display settings.
+    opts.max_view_width = 480;
     opts.max_resize_view_width = 480;
     opts.resize_driven_view    = true;
     opts.extended_view_init    = &minish::install_extended_view;

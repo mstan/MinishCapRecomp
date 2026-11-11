@@ -41,3 +41,20 @@ sha1 = "b4bd50e4131b027c334547b4524e2dbbd4227130"
 start = 0x030062A0
 end   = 0x03006428
 mode  = "arm"
+
+# DrawDirect's nonempty path follows its conditional BX LR at 0x030065A4.
+# The copied ARM body is ROM 0x080B2828..0x080B2873, ending immediately
+# before the next reviewed entry, 0x030065E8. It contains code throughout
+# this span; retain its fall-through and frame-boundary continuation entries.
+[[resume_range]]
+start = 0x0300659C
+end   = 0x030065E8
+mode  = "arm"
+
+# The sprite-list helper likewise has a nonempty path after its conditional
+# BX LR at 0x03006438. ROM 0x080B26B4..0x080B2717 contains only ARM code,
+# including the loop's ordinary return; the following helper starts at 648C.
+[[resume_range]]
+start = 0x03006428
+end   = 0x0300648C
+mode  = "arm"
