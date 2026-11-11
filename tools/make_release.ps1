@@ -104,6 +104,8 @@ foreach ($g in $games) {
   New-Item -ItemType Directory -Force $stage | Out-Null
 
   Copy-Item $exe $stage
+  Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $stage
+  Copy-Item -LiteralPath (Join-Path $root 'PERMISSIONS.md') -Destination $stage
   & "$MingwBin\strip.exe" (Join-Path $stage "$target.exe")
   if ($LASTEXITCODE -ne 0) { throw 'strip failed' }
   Copy-Item -LiteralPath (Join-Path $engine 'tools/CaptureDiagnostics.cmd') -Destination $stage
@@ -153,7 +155,7 @@ Settings > System), tune display/audio/controls, then PLAY.
 
 Static recompilation turns the game's ARM7TDMI code into native C++ (via the
 [gbarecomp](https://github.com/mstan/gbarecomp) framework); the rest of the GBA
-(PPU, APU, DMA, timers, BIOS HLE) runs through the framework's runner core.
+(PPU, APU, DMA, timers, and BIOS execution) runs through the framework's runner core.
 
 ## How to run
 
