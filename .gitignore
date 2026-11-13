@@ -143,3 +143,15 @@ symbols/*_syms.txt
 symbols/*_sections.txt
 variants/*/symbols/*_syms.txt
 variants/*/symbols/*_sections.txt
+
+# Local Android builds, devices and signing material.
+android/.gradle/
+android/.cxx/
+android/app/.cxx/
+android/app/build/
+android/build/
+android/local.properties
+android/signing.local.properties
+*.apk
+*.jks
+*.keystore

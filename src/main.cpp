@@ -20,10 +20,15 @@
 #include <vector>
 
 #include "runtime.h"
+#include "mobile_platform.h"
 #include "minish_extended_view.h"
 
 #if defined(GBAGAME_RECOMP_UI)
 #include "game_launcher_boot.h"
+#endif
+
+#ifndef GBARECOMP_DEFAULT_GAME_CONFIG
+#define GBARECOMP_DEFAULT_GAME_CONFIG "game.toml"
 #endif
 
 namespace {
@@ -47,8 +52,12 @@ void print_usage() {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    std::printf("MinishCapRecomp (Phase 2 scaffold: BIOS bring-up)\n");
+int minish_main(int argc, char** argv) {
+    std::vector<std::string> args(argv, argv + argc);
+    gbarecomp::MobileProcessOptions mobile;
+    mobile.game_config = GBARECOMP_DEFAULT_GAME_CONFIG;
+    mobile.program_name = "./MinishCapRecomp";
+    (void)gbarecomp::mobile_prepare_process(args, mobile);
 
     // Light arg sniff so we can show a useful usage line. The real
     // parser lives in the runtime; we just want a friendly fail.
@@ -77,21 +86,38 @@ int main(int argc, char** argv) {
     opts.max_resize_view_width = 480;
     opts.resize_driven_view    = true;
     opts.extended_view_init    = &minish::install_extended_view;
+    opts.extended_view_frame   = &minish::update_extended_view;
     opts.launcher_expose_widescreen = false;
     opts.launcher_expose_adaptive_view = false;
     opts.launcher_region    = "USA";
-    opts.launcher_game_config = "game.toml";   // prefill ROM/BIOS from [rom]/[bios]
+    opts.launcher_game_config = GBARECOMP_DEFAULT_GAME_CONFIG;
+#if defined(__ANDROID__)
+    opts.ui_touch_friendly = true;
+    opts.orientation = gbarecomp::RunOptions::Orientation::Any;
+    opts.freely_resizable_window = true;
+    opts.resize_view_sizing = gbarecomp::RunOptions::ViewSizing::Density;
+    // Keeps even 128px affine clip dimensions representable in their byte
+    // reads while exposing authored rows on large or folded surfaces.
+    opts.max_resize_view_height = 384;
+#endif
     // Save: game.toml [save] has no explicit path — the runtime derives
     // <rom>.sav, and the launcher seam shows the same derivation.
 
 #if defined(GBAGAME_RECOMP_UI)
-    std::vector<std::string> args(argv, argv + argc);
     if (game_launcher_preboot(args, opts)) return 0;   // user quit the launcher
+#endif
     std::vector<char*> av;
     av.reserve(args.size());
     for (auto& s : args) av.push_back(s.data());
     return gbarecomp::run_game(static_cast<int>(av.size()), av.data(), opts);
-#else
-    return gbarecomp::run_game(argc, argv, opts);
-#endif
 }
+
+#if defined(__ANDROID__)
+extern "C" int SDL_main(int argc, char** argv) {
+    return gbarecomp::mobile_run_with_stack(minish_main, argc, argv);
+}
+#else
+int main(int argc, char** argv) {
+    return minish_main(argc, argv);
+}
+#endif

@@ -43,7 +43,9 @@ add_subdirectory("${GBARECOMP_ROOT}" gbarecomp_build EXCLUDE_FROM_ALL)
 # ─────────────────────────────────────────────────────────────────────
 # verify_rom_hash — refuses to launch the game with an unknown ROM.
 # ─────────────────────────────────────────────────────────────────────
-add_executable(verify_rom_hash tools/verify_rom_hash/main.cpp)
+if(NOT ANDROID)
+    add_executable(verify_rom_hash tools/verify_rom_hash/main.cpp)
+endif()
 
 # ─────────────────────────────────────────────────────────────────────
 # import_tmc_symbols — pulls symbol + boundary data from a local
@@ -63,7 +65,7 @@ add_executable(verify_rom_hash tools/verify_rom_hash/main.cpp)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/recompiled.cpp")
     message(FATAL_ERROR
         "Stale monolithic generated/recompiled.cpp found. Regenerate with "
-        "symbols/minishcap.toml and the current gbarecomp before building.")
+        "symbols/minishcap.toml and symbols/minishcap_reviewed.toml with the current gbarecomp before building.")
 endif()
 file(GLOB MINISH_GENERATED_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/generated/*.c"
@@ -100,9 +102,15 @@ if(MINISH_ENABLE_ZELDA1_FOREIGN_WORLD)
     )
 endif()
 
-add_executable(MinishCapRecomp ${MINISH_RUNTIME_SOURCES})
+if(ANDROID)
+    set(MINISH_TARGET main)
+    add_library(${MINISH_TARGET} SHARED ${MINISH_RUNTIME_SOURCES})
+else()
+    set(MINISH_TARGET MinishCapRecomp)
+    add_executable(${MINISH_TARGET} ${MINISH_RUNTIME_SOURCES})
+endif()
 
-target_include_directories(MinishCapRecomp PRIVATE
+target_include_directories(${MINISH_TARGET} PRIVATE
     "${GBARECOMP_ROOT}/src/armv4t"
     "${GBARECOMP_ROOT}/src/gba"
     "${GBARECOMP_ROOT}/src/runtime"
@@ -110,7 +118,7 @@ target_include_directories(MinishCapRecomp PRIVATE
     src
 )
 
-target_link_libraries(MinishCapRecomp PRIVATE
+target_link_libraries(${MINISH_TARGET} PRIVATE
     # --start-group/--end-group lets ld re-iterate the gbarecomp static
     # libs to resolve their mutual references (runtime_arm.cpp in
     # armv4t references kBiosDispatchTable defined in runtime, etc.).
@@ -125,10 +133,10 @@ target_link_libraries(MinishCapRecomp PRIVATE
     "-Wl,--end-group"
 )
 
-target_compile_definitions(MinishCapRecomp PRIVATE
+target_compile_definitions(${MINISH_TARGET} PRIVATE
     GBARECOMP_DEFAULT_DEBUG_PORT=19842
     GBARECOMP_WINDOW_TITLE="MinishCapRecomp"
-    GBARECOMP_DEFAULT_GAME_CONFIG="game.toml"
+    GBARECOMP_DEFAULT_GAME_CONFIG="$<IF:$<BOOL:${ANDROID}>,variants/minish_cap/game.toml,game.toml>"
 )
 
 # ─────────────────────────────────────────────────────────────────────
@@ -142,6 +150,7 @@ option(GBAGAME_RECOMP_UI "Build the recomp-ui pre-boot launcher" ON)
 if(GBAGAME_RECOMP_UI)
     include(${RECOMP_UI_ROOT}/recomp_ui.cmake)
     add_library(game_launcher_ui STATIC src/game_launcher_boot.cpp)
+    set_target_properties(game_launcher_ui PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(game_launcher_ui PRIVATE
         "${GBARECOMP_ROOT}/src/runtime"   # launcher_seam.h + runtime.h
         "${GBARECOMP_ROOT}/src/gba"
@@ -153,16 +162,18 @@ if(GBAGAME_RECOMP_UI)
     recomp_target_launcher_ui(game_launcher_ui
         CONSOLE gba
         BOXART ${CMAKE_CURRENT_SOURCE_DIR}/recomp/launcher/boxart.tga)
-    find_package(SDL2 REQUIRED)
+    if(NOT TARGET SDL2::SDL2)
+        find_package(SDL2 REQUIRED)
+    endif()
     target_link_libraries(game_launcher_ui PUBLIC SDL2::SDL2)
     if(WIN32)
         target_link_libraries(game_launcher_ui PUBLIC opengl32)
     endif()
-    target_link_libraries(MinishCapRecomp PRIVATE game_launcher_ui)
+    target_link_libraries(${MINISH_TARGET} PRIVATE game_launcher_ui)
     set_property(SOURCE src/main.cpp APPEND PROPERTY COMPILE_DEFINITIONS GBAGAME_RECOMP_UI)
 endif()
 
-# Ship only the game-owned, disabled-by-default adaptive-view package beside
+# Ship only the game-owned adaptive-view package beside
 # normal executables. User-installed .gbamod archives join this same catalog.
 # The Zelda checkpoint manifest lives outside this catalog and is staged only
 # by a developer build that also contains the corresponding plugin.
@@ -170,22 +181,22 @@ set(MINISH_PRELOADED_MODS "${CMAKE_CURRENT_SOURCE_DIR}/mods/preloaded")
 set(MINISH_ZELDA1_DEVELOPER_MODS
     "${CMAKE_CURRENT_SOURCE_DIR}/mods/developer/zelda1-foreign-world")
 if(EXISTS "${MINISH_PRELOADED_MODS}/packages")
-    add_custom_command(TARGET MinishCapRecomp POST_BUILD
+    add_custom_command(TARGET ${MINISH_TARGET} POST_BUILD
         # A developer may reuse one build directory after switching the hidden
         # checkpoint OFF. Remove only this known package so the normal catalog
         # cannot retain a stale, unusable Zelda entry.
         COMMAND ${CMAKE_COMMAND} -E remove_directory
-            "$<TARGET_FILE_DIR:MinishCapRecomp>/mods/packages/minish-cap.foreign-world.zelda1"
+            "$<TARGET_FILE_DIR:${MINISH_TARGET}>/mods/packages/minish-cap.foreign-world.zelda1"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${MINISH_PRELOADED_MODS}"
-            "$<TARGET_FILE_DIR:MinishCapRecomp>/mods"
+            "$<TARGET_FILE_DIR:${MINISH_TARGET}>/mods"
         COMMENT "Preloading the Minish Cap mod catalog")
 endif()
 if(MINISH_ENABLE_ZELDA1_FOREIGN_WORLD)
-    add_custom_command(TARGET MinishCapRecomp POST_BUILD
+    add_custom_command(TARGET ${MINISH_TARGET} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${MINISH_ZELDA1_DEVELOPER_MODS}"
-            "$<TARGET_FILE_DIR:MinishCapRecomp>/mods"
+            "$<TARGET_FILE_DIR:${MINISH_TARGET}>/mods"
         COMMENT "Staging the developer-only Zelda 1 checkpoint catalog")
 endif()
 
@@ -392,6 +403,7 @@ if(BUILD_TESTING)
             tests/test_preloaded_mods.cpp
             "${GBARECOMP_ROOT}/src/runtime/mod_runtime.cpp"
             "${GBARECOMP_ROOT}/src/runtime/mod_function_hooks.cpp"
+            "${GBARECOMP_ROOT}/src/runtime/codebreaker.cpp"
             "${GBARECOMP_ROOT}/src/runtime/asset_picker.cpp"
             "${GBARECOMP_ROOT}/src/runtime/host_platform.cpp"
             "${GBARECOMP_ROOT}/src/gba/crc32.cpp"
@@ -425,7 +437,7 @@ if(BUILD_TESTING)
 endif()
 
 if(MSVC)
-    target_link_options(MinishCapRecomp PRIVATE /STACK:16777216)
+    target_link_options(${MINISH_TARGET} PRIVATE /STACK:16777216)
 elseif(MINGW OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "MSYS")
-    target_link_options(MinishCapRecomp PRIVATE -Wl,--stack,16777216)
+    target_link_options(${MINISH_TARGET} PRIVATE -Wl,--stack,16777216)
 endif()
