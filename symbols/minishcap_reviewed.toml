@@ -23,3 +23,11 @@ sha1 = "b4bd50e4131b027c334547b4524e2dbbd4227130"
 start = 0x03006164
 end = 0x03006710
 mode = "arm"
+
+# Exact copied ARM callee reached by the native collision/dialogue path.
+# ROM 080B1D98 maps to IWRAM 03005B0C in the declared iwram_funcs copy.
+# Seed the entry alone; the preceding three literal words are not code.
+[[extra_func]]
+addr = 0x03005B0C
+mode = "arm"
+name = "ram_CalcCollision"
