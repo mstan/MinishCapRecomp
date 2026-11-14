@@ -56,24 +56,32 @@ add_executable(verify_rom_hash tools/verify_rom_hash/main.cpp)
 # ─────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────
-# MinishCapRecomp — the game binary. Links generated/*.c against the
-# runtime libs. The Phase 0 scaffold has no generated/*.c yet, so we
-# build with just main + game_config to verify the wiring compiles.
+# The game links separate generated stock and exact DE1.4 native programs.
+# ROMs, the author patch, and generated sources remain local build inputs.
 # ─────────────────────────────────────────────────────────────────────
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/recompiled.cpp")
     message(FATAL_ERROR
         "Stale monolithic generated/recompiled.cpp found. Regenerate with "
         "symbols/minishcap.toml and the current gbarecomp before building.")
 endif()
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/definitive14/de14_dispatch_table.cpp")
+    message(FATAL_ERROR
+        "The separate Definitive Edition USA1.4 native program is missing. "
+        "Run tools/generate_definitive14.py with the current gba_recompile, "
+        "your original USA ROM and exact author USA1.4 IPS; see README.md.")
+endif()
 file(GLOB MINISH_GENERATED_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/generated/*.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/generated/*.cpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/generated/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/generated/definitive14/*.cpp")
 
 set(MINISH_RUNTIME_SOURCES
     src/main.cpp
     src/game_config.cpp
     src/minish_extended_view.cpp
     src/mods/minish_adaptive_view_plugin.cpp
+    src/mods/minish_definitive14.cpp
+    src/mods/minish_definitive14_patch.cpp
     ${MINISH_GENERATED_SOURCES}
 )
 
@@ -190,6 +198,10 @@ if(MINISH_ENABLE_ZELDA1_FOREIGN_WORLD)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(minish_definitive14_patch_test
+        tests/test_definitive14_patch.cpp src/mods/minish_definitive14_patch.cpp
+        "${GBARECOMP_ROOT}/src/gba/sha1.cpp")
+    target_include_directories(minish_definitive14_patch_test PRIVATE src "${GBARECOMP_ROOT}/src/gba")
     add_library(minish_foreign_world_core STATIC
         src/foreign_worlds/foreign_world.cpp)
     target_include_directories(minish_foreign_world_core PUBLIC src)
@@ -391,6 +403,7 @@ if(BUILD_TESTING)
         add_executable(minish_preloaded_mods_test
             tests/test_preloaded_mods.cpp
             "${GBARECOMP_ROOT}/src/runtime/mod_runtime.cpp"
+            "${GBARECOMP_ROOT}/src/runtime/codebreaker.cpp"
             "${GBARECOMP_ROOT}/src/runtime/mod_function_hooks.cpp"
             "${GBARECOMP_ROOT}/src/runtime/asset_picker.cpp"
             "${GBARECOMP_ROOT}/src/runtime/host_platform.cpp"

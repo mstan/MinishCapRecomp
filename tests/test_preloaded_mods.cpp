@@ -1,6 +1,8 @@
 #include "mod_runtime.h"
 #include "recomp_launcher.h"
 #include "crc32.h"
+#include "sha1.h"
+#include "asset_picker.h"
 
 #include <chrono>
 #include <cstdint>
@@ -125,6 +127,22 @@ int main(int argc, char** argv) {
         return fail("could not register Minish Cap plugin");
     }
 
+    if (!gba_mod_register_activation_plugin("minish-cap.definitive-edition-1-4", +[]() {}))
+        return fail("could not register Definitive Edition test plugin");
+    const auto unicode_asset_path = root / std::filesystem::path(u8"資産.ips");
+    const std::string asset_bytes = "verified asset input";
+    { std::ofstream file(unicode_asset_path, std::ios::binary); file << asset_bytes; }
+    const auto asset_hash = gba::sha1(asset_bytes.data(), asset_bytes.size()).hex();
+    gbarecomp::AssetSpec asset_spec{};
+    asset_spec.display_name = "UTF-8 required asset";
+    asset_spec.expected_size = asset_bytes.size();
+    asset_spec.expected_sha1 = asset_hash.c_str();
+    asset_spec.hash_mismatch_is_error = true;
+    const auto utf8_asset_path = unicode_asset_path.u8string();
+    const auto checked_asset = gbarecomp::validate_asset_path(
+        std::string(utf8_asset_path.begin(), utf8_asset_path.end()), asset_spec);
+    if (!checked_asset.ok || checked_asset.bytes.size() != asset_bytes.size())
+        return fail("UTF-8 asset validation failed: " + checked_asset.error);
     std::string error;
     if (!gbarecomp::mod_runtime_initialize(
             root, "minish-cap-us",
@@ -136,9 +154,9 @@ int main(int argc, char** argv) {
         gbarecomp::mod_runtime_launcher_provider();
     constexpr std::size_t kExpectedCatalogEntries =
 #if MINISH_ENABLE_ZELDA1_FOREIGN_WORLD
-        2;
+        3;
 #else
-        1;
+        2;
 #endif
     if (!provider || provider->package_count(provider->ctx) != kExpectedCatalogEntries ||
         provider->feature_count(provider->ctx) != kExpectedCatalogEntries ||
@@ -177,8 +195,8 @@ int main(int argc, char** argv) {
                     provider->last_error(provider->ctx));
     }
 
-    RecompLauncherCModFeature feature{};
-    bool found_adaptive = false;
+    RecompLauncherCModFeature feature{}, definitive{};
+    bool found_adaptive = false, found_definitive = false;
 #if MINISH_ENABLE_ZELDA1_FOREIGN_WORLD
     RecompLauncherCModFeature zelda_feature{};
     bool found_zelda = false;
@@ -193,6 +211,11 @@ int main(int argc, char** argv) {
             feature = candidate;
             found_adaptive = true;
         }
+        if (std::string(candidate.package_id) == "minish-cap.gameplay.definitive-edition" &&
+            std::string(candidate.id) == "definitive-edition") {
+            definitive = candidate;
+            found_definitive = true;
+        }
 #if MINISH_ENABLE_ZELDA1_FOREIGN_WORLD
         if (std::string(candidate.package_id) ==
                 "minish-cap.foreign-world.zelda1" &&
@@ -205,6 +228,15 @@ int main(int argc, char** argv) {
     if (!found_adaptive || feature.enabled) {
         return fail("release catalog did not expose exactly disabled adaptive view");
     }
+
+    if (!found_definitive || definitive.enabled)
+        return fail("release catalog did not expose disabled Definitive Edition");
+    std::string patch_error;
+    if (!provider->feature_enable(provider->ctx, definitive.package_id, definitive.id, 1) ||
+        gbarecomp::mod_runtime_commit({}, &patch_error) || patch_error.empty())
+        return fail("Definitive Edition accepted a missing exact patch asset");
+    if (!provider->feature_enable(provider->ctx, definitive.package_id, definitive.id, 0))
+        return fail("could not disable the failed Definitive Edition plan");
 
 #if MINISH_ENABLE_ZELDA1_FOREIGN_WORLD
     if (!found_zelda || zelda_feature.enabled) {
