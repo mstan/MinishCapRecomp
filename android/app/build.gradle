@@ -12,8 +12,8 @@ def uiRoot = pick("recompUiRoot", "RECOMP_UI_ROOT", new File(gameRoot, "recomp-u
 
 ext.gbaGame = [
     applicationId : "com.mstan.minishcaprecomp",
-    versionCode   : 7,
-    versionName   : "0.0.7",
+    versionCode   : 9,
+    versionName   : "0.0.9-rc.1",
     title         : "The Legend of Zelda: The Minish Cap",
     romLabel      : "The Minish Cap (USA) ROM",
     romSha1       : ["b4bd50e4131b027c334547b4524e2dbbd4227130"],
