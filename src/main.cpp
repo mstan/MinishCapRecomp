@@ -21,6 +21,7 @@
 
 #include "runtime.h"
 #include "minish_extended_view.h"
+#include "mods/minish_definitive14.h"
 
 #if defined(GBAGAME_RECOMP_UI)
 #include "game_launcher_boot.h"
@@ -71,6 +72,7 @@ int main(int argc, char** argv) {
     // asset picker treats it as informational next to the SHA-1 gate.
     opts.builtin_rom_crc32  = 0xABCEBBB1u;
     opts.mod_game_id        = "minish-cap-us";
+    minish::configure_definitive14(opts);
     opts.mod_owns_adaptive_view = true;
     // The adaptive-view implementation remains game-owned, but its activation
     // is now authoritative in Mods rather than the generic Display settings.

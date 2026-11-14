@@ -1,4 +1,5 @@
 #include "minish_extended_view.h"
+#include "mods/minish_definitive14.h"
 
 #include <array>
 #include <cstdint>
@@ -60,39 +61,19 @@ int g_ring_bias_y = 0;
 int g_bias_best_score = -1;
 int g_bias_zero_score = -1;
 
-// ── MC-WS-002 single-clock margin camera ─────────────────────────────────
-// Measured defect (camtrace 2026-07-17): sampling the EWRAM camera at render
-// time runs one game-tick ahead of the latched HOFS/VOFS on ~12% of walking
-// frames — the margins visibly oscillate 1-2px against the always-latched
-// center. Fix: anchor the absolute room camera from EWRAM once, then advance
-// it every frame by the HARDWARE scroll deltas the center itself is composed
-// from — margins and center then share one clock by construction. The game's
-// 16px tile-ring rotation adds exact ±16 jumps to HOFS/VOFS; per-frame camera
-// motion is far below 8px, so unwrapping deltas mod 16 recovers pure motion.
-// Re-anchor whenever the unwrapped prediction and the EWRAM camera disagree
-// by a full metatile (room load, door warp, cutscene camera snap).
-// GBARECOMP_WS_CAM_EWRAM=1 restores the old render-time EWRAM sampling (A/B).
-struct IntegratedCamera {
-    bool anchored = false;
-    int cam_x = 0;
-    int cam_y = 0;
-    int last_hofs = 0;
-    int last_vofs = 0;
-    int last_origin_x = 0;
-    int last_origin_y = 0;
-    bool used_ewram = false;  // what the last frame actually used (trace)
-};
-IntegratedCamera g_icam;
-
-int unwrap16(int d) {  // signed mod-16 unwrap of a mod-512 scroll delta
-    d &= 15;
-    return d > 8 ? d - 16 : d;
+// The hardware scroll supplies the displayed pixel phase. Tile-ring rotation
+// changes only complete 8px tiles, while EWRAM supplies the absolute room tile.
+// Reconstruct this from the current frame instead of integrating host camera
+// history: the latter could anchor one game tick ahead after a state restore.
+// The nearest matching phase tolerates the normal one/two-pixel EWRAM lead;
+// the authentic ring-entry matcher below resolves whole-metatile rotation.
+int align_camera_phase(int room_camera, int hardware_scroll) {
+    int delta = (hardware_scroll - room_camera) & 7;
+    if (delta > 3) delta -= 8;
+    return room_camera + delta;
 }
 
-int wrap512(int d) {  // signed mod-512 delta
-    d &= 511;
-    return d > 256 ? d - 512 : d;
-}
+bool g_camera_used_ewram = false;
 
 struct ObjXCacheEntry {
     std::uint16_t attr0 = 0;
@@ -314,7 +295,7 @@ void camtrace_frame(gba::GbaBus* bus, int scroll_x, int scroll_y,
         g_state.ring_bias_x, g_state.ring_bias_y,
         g_bias_best_score, g_bias_zero_score,
         g_state.room_width, g_state.room_height, maps,
-        g_icam.used_ewram ? 1 : 0);
+        g_camera_used_ewram ? 1 : 0);
     std::fflush(f);
 }
 
@@ -359,47 +340,22 @@ void refresh_scanline(gba::GbaBus* bus, int screen_y) {
         rd8(bus, kRoomControls + 0x25u));
     const int ewram_cam_x = base_camera_x + shake_x;
     const int ewram_cam_y = base_camera_y + shake_y;
-    // Single-clock margin camera (see IntegratedCamera above): advance the
-    // absolute room camera by the hardware scroll deltas the center is
-    // composed from; the render-time EWRAM sample only anchors/re-anchors.
+    // Use the same latched pixel phase as the native center, without a host
+    // accumulator whose initial anchor could differ after load/rewind.
     static const bool use_ewram_cam = [] {
         const char* e = std::getenv("GBARECOMP_WS_CAM_EWRAM");
         return e && *e && *e != '0';
     }();
     const int ref_bg = bottom_bg >= 0 ? bottom_bg : top_bg;
-    if (use_ewram_cam || ref_bg < 0) {
+    g_camera_used_ewram = use_ewram_cam || ref_bg < 0;
+    if (g_camera_used_ewram) {
         g_state.camera_x = ewram_cam_x;
         g_state.camera_y = ewram_cam_y;
-        g_icam.anchored = false;
-        g_icam.used_ewram = true;
     } else {
         const int hofs = bus->io().read16(0x10u + ref_bg * 4u) & 0x1FF;
         const int vofs = bus->io().read16(0x12u + ref_bg * 4u) & 0x1FF;
-        const bool room_changed =
-            origin_x != g_icam.last_origin_x ||
-            origin_y != g_icam.last_origin_y;
-        if (g_icam.anchored && !room_changed) {
-            g_icam.cam_x += unwrap16(wrap512(hofs - g_icam.last_hofs));
-            g_icam.cam_y += unwrap16(wrap512(vofs - g_icam.last_vofs));
-            // A fast pan (>8px/frame) breaks the mod-16 unwrap; the EWRAM
-            // camera catches it within a metatile and re-anchors.
-            if (std::abs(g_icam.cam_x - ewram_cam_x) > 16 ||
-                std::abs(g_icam.cam_y - ewram_cam_y) > 16) {
-                g_icam.cam_x = ewram_cam_x;
-                g_icam.cam_y = ewram_cam_y;
-            }
-        } else {
-            g_icam.cam_x = ewram_cam_x;
-            g_icam.cam_y = ewram_cam_y;
-            g_icam.anchored = true;
-        }
-        g_icam.last_hofs = hofs;
-        g_icam.last_vofs = vofs;
-        g_icam.last_origin_x = origin_x;
-        g_icam.last_origin_y = origin_y;
-        g_state.camera_x = g_icam.cam_x;
-        g_state.camera_y = g_icam.cam_y;
-        g_icam.used_ewram = false;
+        g_state.camera_x = align_camera_phase(ewram_cam_x, hofs);
+        g_state.camera_y = align_camera_phase(ewram_cam_y, vofs);
     }
     g_state.room_width = static_cast<int>(
         rd16(bus, kRoomControls + 0x1Eu));
@@ -457,7 +413,10 @@ extern "C" int minish_hud_bg_x_provider(int bg, int output_x, int screen_y,
     if (!out_hardware_x || bg != 0) return 0;
     if (screen_y < 8 || (screen_y >= 32 && screen_y < 128)) return 0;
     gba::GbaBus* bus = active_game_bus();
-    if (!bus) return 0;
+    // Native pause/map pages reuse HUD graphics. Keep their complete native
+    // composition centered instead of relocating pieces of menu text.
+    if (!bus || rd8(bus, 0x03001002u) != 2u || rd8(bus, 0x03001004u) != 2u)
+        return 0;
     refresh_scanline(bus, screen_y);
     if (g_state.message_active) return 0;
 
@@ -471,6 +430,8 @@ extern "C" int minish_hud_bg_x_provider(int bg, int output_x, int screen_y,
         screen_y >= 128 && screen_y < 144;
     const bool rupees = (hide_flags & 0x40) == 0 &&
         screen_y >= 144 && screen_y < 160;
+    // Exact DE1.4 adds the ones glyph in the final native tile column.
+    const int rupee_end = definitive14_active() ? 240 : 232;
 
     if (output_x < left) {
         // Hearts and the sword charge bar occupy BG0 rows 1..3, columns
@@ -485,7 +446,7 @@ extern "C" int minish_hud_bg_x_provider(int bg, int output_x, int screen_y,
         // their distance from the physical right edge at every view width.
         const int native_x = output_x - extra;
         if ((keys && native_x >= 200 && native_x < 232) ||
-            (rupees && native_x >= 192 && native_x < 232)) {
+            (rupees && native_x >= 192 && native_x < rupee_end)) {
             *out_hardware_x = native_x;
             return 1;
         }
@@ -496,7 +457,7 @@ extern "C" int minish_hud_bg_x_provider(int bg, int output_x, int screen_y,
         const int native_x = output_x - left;
         if ((left > 0 && hearts && native_x >= 0 && native_x < 96) ||
             (right > 0 && keys && native_x >= 200 && native_x < 232) ||
-            (right > 0 && rupees && native_x >= 192 && native_x < 232)) {
+            (right > 0 && rupees && native_x >= 192 && native_x < rupee_end)) {
             return -1;
         }
     }
@@ -554,7 +515,9 @@ extern "C" int minish_hud_obj_x_provider(int oam_index, std::uint16_t attr0,
                                           std::uint16_t attr1,
                                           std::uint16_t attr2, int* out_x) {
     gba::GbaBus* bus = active_game_bus();
-    if (!bus || !out_x || (rd8(bus, kMessage) & 0x7Fu) != 0) return 0;
+    if (!bus || !out_x || (rd8(bus, kMessage) & 0x7Fu) != 0 ||
+        rd8(bus, 0x03001002u) != 2u || rd8(bus, 0x03001004u) != 2u)
+        return 0;
 
     ObjXCacheEntry* cache = oam_index >= 0 && oam_index < 128
         ? &g_obj_x_cache[static_cast<std::size_t>(oam_index)] : nullptr;
