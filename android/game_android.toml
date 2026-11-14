@@ -1,0 +1,40 @@
+# Installed only inside this application's private files directory.
+[game]
+name = "The Legend of Zelda: The Minish Cap"
+short_name = "minish_cap"
+default_region = "usa"
+
+[program]
+name = "The Legend of Zelda: The Minish Cap (USA)"
+id = "BZME"
+load_address = 0x08000000
+size = 0x01000000
+entry_pc = 0x08000000
+
+[identity]
+sha1 = "b4bd50e4131b027c334547b4524e2dbbd4227130"
+
+[bios]
+path = "../../bios/gba_bios.bin"
+sha1 = "300c20df6731a33952ded8c436f7f186d25d3492"
+
+[rom]
+path = "../../roms/minishcap_usa.gba"
+sha1 = "b4bd50e4131b027c334547b4524e2dbbd4227130"
+
+[save]
+type = "eeprom"
+size = 8192
+path = "../../saves/minishcap_usa.sav"
+
+[runtime]
+debug_port = 19842
+window_title = "The Legend of Zelda: The Minish Cap"
+
+[video]
+screen = "frontlit"
+view_width = 240
+resize_view = true
+
+[audio]
+shadow = true

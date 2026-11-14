@@ -147,6 +147,21 @@ int main(int argc, char** argv) {
         return fail("catalog exposed an unexpected package or feature count");
     }
 
+    bool fresh_adaptive = false;
+    for (std::size_t i = 0; i < provider->feature_count(provider->ctx); ++i) {
+        RecompLauncherCModFeature item{};
+        if (!provider->feature_get(provider->ctx, i, &item))
+            return fail("could not inspect fresh feature");
+        if (std::string(item.package_id) == "minish-cap.enhancement.adaptive-view") {
+            fresh_adaptive = item.enabled != 0;
+            if (!provider->feature_enable(provider->ctx, item.package_id, item.id, 0) ||
+                !provider->commit(provider->ctx, nullptr))
+                return fail("could not persist explicit native-view choice");
+        }
+    }
+    if (!fresh_adaptive)
+        return fail("fresh catalog did not enable adaptive widescreen");
+
     const std::string update_manifest =
         "format_version = 1\n"
         "id = \"minish-cap.enhancement.adaptive-view\"\n"
@@ -164,7 +179,7 @@ int main(int argc, char** argv) {
         "id = \"adaptive-view\"\n"
         "name = \"Adaptive Widescreen\"\n"
         "group = \"Display\"\n"
-        "default_enabled = false\n\n"
+        "default_enabled = true\n\n"
         "[[plugin]]\n"
         "feature = \"adaptive-view\"\n"
         "id = \"minish-cap.adaptive-view\"\n";
@@ -203,7 +218,7 @@ int main(int argc, char** argv) {
 #endif
     }
     if (!found_adaptive || feature.enabled) {
-        return fail("release catalog did not expose exactly disabled adaptive view");
+        return fail("package update replaced explicit native-view choice");
     }
 
 #if MINISH_ENABLE_ZELDA1_FOREIGN_WORLD
@@ -245,6 +260,19 @@ int main(int argc, char** argv) {
     gbarecomp::mod_runtime_activate_plugins();
     if (g_active || gba_mod_adaptive_view_enabled())
         return fail("disabled adaptive view did not restore native view");
+
+    if (!gbarecomp::mod_runtime_initialize(root, "minish-cap-us",
+            "b4bd50e4131b027c334547b4524e2dbbd4227130", &error))
+        return fail("could not reopen persisted catalog");
+    provider = gbarecomp::mod_runtime_launcher_provider();
+    for (std::size_t i = 0; i < provider->feature_count(provider->ctx); ++i) {
+        RecompLauncherCModFeature item{};
+        if (!provider->feature_get(provider->ctx, i, &item))
+            return fail("could not inspect reloaded feature");
+        if (std::string(item.package_id) == "minish-cap.enhancement.adaptive-view" &&
+            item.enabled)
+            return fail("cold catalog reload replaced explicit native-view choice");
+    }
 
     fs::remove_all(root, ec);
     std::cout << "Minish Cap preloaded mods: release catalog, archive install, "

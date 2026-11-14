@@ -1,8 +1,9 @@
 # symbols/
 
-Imported symbol map for Minish Cap. Files in here are produced by
+Imported symbol map for Minish Cap. Imported tables are produced by
 `tools/import_tmc_symbols/`; do not hand-edit unless explicitly
-adding a symbol the decomp doesn't yet have.
+adding a symbol the decomp doesn't yet have. `minishcap_reviewed.toml` is
+a hand-owned overlay and is passed as the second recompiler config.
 
 | File                          | What it is                                        |
 |-------------------------------|---------------------------------------------------|

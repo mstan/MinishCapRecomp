@@ -65,6 +65,42 @@ Save chip: EEPROM. (Other regions can be added by checksum in `config/<region>.t
 4. Play. Early on you may briefly see the interpreter warm up new code paths; once
    warmed (and cached), they run native.
 
+## Experimental Android build
+
+The Android target builds an ARM64 APK for Android 9 or newer. Supply the USA
+ROM listed above and a GBA BIOS through the setup screen; neither is bundled.
+The application keeps its imported inputs, EEPROM save and settings in its own
+private storage.
+
+Adaptive view starts enabled on a fresh profile and follows portrait, landscape
+and square surfaces. Existing explicit mod choices are preserved. The expanded
+view is capped at 480 by 384 logical pixels; the original game's 160-line timing
+and physics remain unchanged. Authored room terrain continues into the margins,
+and HUD elements follow the display edges. Areas beyond a finite room have no
+invented terrain. Disable Adaptive Widescreen to retain the original 240 by 160
+view.
+
+This is an experimental port. Android emulator checks cover representative native
+gameplay, EEPROM saving, current-build snapshots, terrain/HUD rendering and surface
+resizing. Separate actors in the added margins, physical Fold behavior, touch,
+audio output and device performance still require qualification. ARM64 execution
+through an emulator's translation layer does not establish physical-device speed.
+
+To build, initialize the pinned submodules and generate the ROM and BIOS code
+using the normal `gbarecomp` pipeline. Pass both `symbols/minishcap.toml` and
+`symbols/minishcap_reviewed.toml` when generating this title; the reviewed map
+includes the original game's copied IWRAM sprite helpers. With JDK 17, Android
+SDK 35 and NDK 27.1.12297006 installed, run:
+
+```powershell
+cd android
+.\gradlew.bat assembleRelease -PgbaAbis=arm64-v8a -PgbaNativeJobs=1
+```
+
+The existing `gbarecompRoot` and `recompUiRoot` Gradle properties can select
+separate engine/UI checkouts. Configure release signing locally as described by
+the shared Android build; signing keys and local SDK paths stay untracked.
+
 ## Controls
 
 | GBA button | Keyboard      |
@@ -214,7 +250,7 @@ you can regenerate the C and build directly:
 
 ```
 # from PowerShell, mingw64 on PATH
-gba_recompile --rom roms/minishcap_usa.gba --config symbols/minishcap.toml --out generated
+gba_recompile --rom roms/minishcap_usa.gba --config symbols/minishcap.toml --config symbols/minishcap_reviewed.toml --out generated
 cmake -S . -B build -G Ninja -DGBARECOMP_ROOT=../gbarecomp
 cmake --build build --target MinishCapRecomp
 ```

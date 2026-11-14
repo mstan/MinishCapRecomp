@@ -8,6 +8,7 @@
 #include "gba_bus.h"
 #include "gba_ppu.h"
 #include "runtime_arm.h"
+#include "runtime.h"
 #include "runtime_bus_bridge.h"
 
 extern "C" unsigned g_ws_active;
@@ -60,51 +61,53 @@ int g_ring_bias_y = 0;
 int g_bias_best_score = -1;
 int g_bias_zero_score = -1;
 
-// ── MC-WS-002 single-clock margin camera ─────────────────────────────────
-// Measured defect (camtrace 2026-07-17): sampling the EWRAM camera at render
-// time runs one game-tick ahead of the latched HOFS/VOFS on ~12% of walking
-// frames — the margins visibly oscillate 1-2px against the always-latched
-// center. Fix: anchor the absolute room camera from EWRAM once, then advance
-// it every frame by the HARDWARE scroll deltas the center itself is composed
-// from — margins and center then share one clock by construction. The game's
-// 16px tile-ring rotation adds exact ±16 jumps to HOFS/VOFS; per-frame camera
-// motion is far below 8px, so unwrapping deltas mod 16 recovers pure motion.
-// Re-anchor whenever the unwrapped prediction and the EWRAM camera disagree
-// by a full metatile (room load, door warp, cutscene camera snap).
-// GBARECOMP_WS_CAM_EWRAM=1 restores the old render-time EWRAM sampling (A/B).
-struct IntegratedCamera {
-    bool anchored = false;
-    int cam_x = 0;
-    int cam_y = 0;
-    int last_hofs = 0;
-    int last_vofs = 0;
-    int last_origin_x = 0;
-    int last_origin_y = 0;
-    bool used_ewram = false;  // what the last frame actually used (trace)
-};
-IntegratedCamera g_icam;
-
-int unwrap16(int d) {  // signed mod-16 unwrap of a mod-512 scroll delta
-    d &= 15;
-    return d > 8 ? d - 16 : d;
+// The hardware scroll supplies the displayed pixel phase. Tile-ring rotation
+// changes only complete 8px tiles, while EWRAM supplies the absolute room tile.
+// Reconstruct this from the current frame instead of integrating host camera
+// history: the latter could anchor one game tick ahead after a state restore.
+// The nearest matching phase tolerates the normal one/two-pixel EWRAM lead;
+// the authentic ring-entry matcher below resolves whole-metatile rotation.
+int align_camera_phase(int room_camera, int hardware_scroll) {
+    int delta = (hardware_scroll - room_camera) & 7;
+    if (delta > 3) delta -= 8;
+    return room_camera + delta;
 }
 
-int wrap512(int d) {  // signed mod-512 delta
-    d &= 511;
-    return d > 256 ? d - 512 : d;
-}
+bool g_camera_used_ewram = false;
 
 struct ObjXCacheEntry {
     std::uint16_t attr0 = 0;
     std::uint16_t attr1 = 0;
     std::uint16_t attr2 = 0;
     int out_x = 0;
+    int out_y = 0;
     int action = 0;
     std::uint32_t generation = 0;
 };
 
 std::array<ObjXCacheEntry, 128> g_obj_x_cache{};
 std::uint32_t g_obj_x_cache_generation = 1;
+unsigned g_extra_top = 0;
+unsigned g_extra_bottom = 0;
+std::uint64_t g_state_epoch = 0;
+
+int minish_clip_read(std::uint32_t pc, std::uint32_t address,
+                     std::uint32_t width, std::uint32_t original,
+                     std::uint32_t* out) {
+    // Exact USA Draw OBJ geometry table; only the clipping read changes.
+    // The descriptor, original OAM coordinates and other readers stay intact.
+    if (!g_ws_active || !out || width != 1 || !original || original > 128 ||
+        address < 0x0300695Cu || address >= 0x03006A5Cu) return 0;
+    unsigned extra = 0;
+    if ((pc == 0x080B2904u || pc == 0x03006678u) && (address & 3u) == 3)
+        extra = g_extra_top;
+    else if ((pc == 0x080B2924u || pc == 0x03006698u) && (address & 3u) == 2)
+        extra = g_ws_extra_left;
+    if (!extra || original + extra > 255) return 0;
+    *out = original + extra;
+    return 1;
+}
+
 
 // Horizontal visibility helpers in the original game use the native 240px
 // viewport as an immediate/literal. These exact sites retain their original
@@ -118,6 +121,23 @@ extern "C" int minish_view_alu_immediate(std::uint32_t pc,
         case 0x080040B2u:  // CheckOnScreen: preserve its 63px left guard.
             if (original != 0x3Fu) return 0;
             *out_value = original + g_ws_extra_left;
+            return 1;
+        case 0x080040C8u:  // CheckOnScreen: preserve its top guard.
+            if (original != 0x3Fu) return 0;
+            *out_value = original + g_extra_top;
+            return 1;
+        case 0x080562E6u:  // CheckRegionOnScreen: bottom edge.
+            if (original != 0xA0u) return 0;
+            *out_value = original + g_extra_bottom;
+            return 1;
+        case 0x080562EAu:  // Total vertical comparison span.
+            if (original != 0xA0u) return 0;
+            *out_value = original + g_extra_top + g_extra_bottom;
+            return 1;
+        case 0x080B28FCu:
+        case 0x03006670u:  // Copied native OBJ bottom clip.
+            if (original != 0xA0u) return 0;
+            *out_value = original + g_extra_bottom;
             return 1;
         case 0x080562DAu:  // CheckRegionOnScreen: right viewport edge.
             if (original != 0xF0u) return 0;
@@ -140,15 +160,16 @@ extern "C" int minish_view_alu_immediate(std::uint32_t pc,
 extern "C" int minish_view_rom_read32(std::uint32_t address,
                                         std::uint32_t original,
                                         std::uint32_t* out_value) {
-    if (!out_value || !g_ws_active || address != 0x0800436Cu ||
-        original != 0x0000016Eu) {
-        return 0;
+    if (!out_value || !g_ws_active) return 0;
+    if (address == 0x0800436Cu && original == 0x16Eu) {
+        *out_value = original + g_ws_extra_left + g_ws_extra_right;
+        return 1;
     }
-
-    // CheckOnScreen's upper bound includes the original 63px guard on both
-    // sides. Widen only its horizontal span; vertical culling is unchanged.
-    *out_value = original + g_ws_extra_left + g_ws_extra_right;
-    return 1;
+    if (address == 0x08004370u && original == 0x11Eu) {
+        *out_value = original + g_extra_top + g_extra_bottom;
+        return 1;
+    }
+    return 0;
 }
 
 gba::GbaBus* active_game_bus() {
@@ -314,7 +335,7 @@ void camtrace_frame(gba::GbaBus* bus, int scroll_x, int scroll_y,
         g_state.ring_bias_x, g_state.ring_bias_y,
         g_bias_best_score, g_bias_zero_score,
         g_state.room_width, g_state.room_height, maps,
-        g_icam.used_ewram ? 1 : 0);
+        g_camera_used_ewram ? 1 : 0);
     std::fflush(f);
 }
 
@@ -359,47 +380,22 @@ void refresh_scanline(gba::GbaBus* bus, int screen_y) {
         rd8(bus, kRoomControls + 0x25u));
     const int ewram_cam_x = base_camera_x + shake_x;
     const int ewram_cam_y = base_camera_y + shake_y;
-    // Single-clock margin camera (see IntegratedCamera above): advance the
-    // absolute room camera by the hardware scroll deltas the center is
-    // composed from; the render-time EWRAM sample only anchors/re-anchors.
+    // Use the same latched pixel phase as the native center, without a host
+    // accumulator whose initial anchor could differ after load/rewind.
     static const bool use_ewram_cam = [] {
         const char* e = std::getenv("GBARECOMP_WS_CAM_EWRAM");
         return e && *e && *e != '0';
     }();
     const int ref_bg = bottom_bg >= 0 ? bottom_bg : top_bg;
-    if (use_ewram_cam || ref_bg < 0) {
+    g_camera_used_ewram = use_ewram_cam || ref_bg < 0;
+    if (g_camera_used_ewram) {
         g_state.camera_x = ewram_cam_x;
         g_state.camera_y = ewram_cam_y;
-        g_icam.anchored = false;
-        g_icam.used_ewram = true;
     } else {
         const int hofs = bus->io().read16(0x10u + ref_bg * 4u) & 0x1FF;
         const int vofs = bus->io().read16(0x12u + ref_bg * 4u) & 0x1FF;
-        const bool room_changed =
-            origin_x != g_icam.last_origin_x ||
-            origin_y != g_icam.last_origin_y;
-        if (g_icam.anchored && !room_changed) {
-            g_icam.cam_x += unwrap16(wrap512(hofs - g_icam.last_hofs));
-            g_icam.cam_y += unwrap16(wrap512(vofs - g_icam.last_vofs));
-            // A fast pan (>8px/frame) breaks the mod-16 unwrap; the EWRAM
-            // camera catches it within a metatile and re-anchors.
-            if (std::abs(g_icam.cam_x - ewram_cam_x) > 16 ||
-                std::abs(g_icam.cam_y - ewram_cam_y) > 16) {
-                g_icam.cam_x = ewram_cam_x;
-                g_icam.cam_y = ewram_cam_y;
-            }
-        } else {
-            g_icam.cam_x = ewram_cam_x;
-            g_icam.cam_y = ewram_cam_y;
-            g_icam.anchored = true;
-        }
-        g_icam.last_hofs = hofs;
-        g_icam.last_vofs = vofs;
-        g_icam.last_origin_x = origin_x;
-        g_icam.last_origin_y = origin_y;
-        g_state.camera_x = g_icam.cam_x;
-        g_state.camera_y = g_icam.cam_y;
-        g_icam.used_ewram = false;
+        g_state.camera_x = align_camera_phase(ewram_cam_x, hofs);
+        g_state.camera_y = align_camera_phase(ewram_cam_y, vofs);
     }
     g_state.room_width = static_cast<int>(
         rd16(bus, kRoomControls + 0x1Eu));
@@ -515,7 +511,7 @@ int distance(int a, int b) {
 
 bool match_world_entity_x(gba::GbaBus* bus, std::uint32_t entity,
                           int raw_x, int raw_y, int* best_score,
-                          int* best_x) {
+                          int* best_x, int* best_y) {
     const unsigned kind = rd8(bus, entity + 0x08u);
     const unsigned flags = rd8(bus, entity + 0x10u);
     const unsigned draw = rd8(bus, entity + 0x18u) & 3u;
@@ -533,17 +529,22 @@ bool match_world_entity_x(gba::GbaBus* bus, std::uint32_t entity,
     const int offset_y = static_cast<std::int8_t>(rd8(bus, entity + 0x63u));
     const int expected_x = entity_x - scroll_x + offset_x;
     const int expected_y = entity_y - scroll_y - entity_z + offset_y;
-    if (distance(raw_y, expected_y) > 64) return false;
+    int resolved_y = raw_y;
+    if (g_extra_top || g_extra_bottom)
+        for (int y : {raw_y - 256, raw_y + 256})
+            if (distance(y, expected_y) < distance(resolved_y, expected_y)) resolved_y = y;
+    if (distance(resolved_y, expected_y) > 64) return false;
 
     const int candidates[] = {raw_x, raw_x - 512};
     bool matched = false;
     for (int candidate : candidates) {
         const int dx = distance(candidate, expected_x);
         if (dx > 64) continue;
-        const int score = dx + distance(raw_y, expected_y);
+        const int score = dx + distance(resolved_y, expected_y);
         if (score < *best_score) {
             *best_score = score;
             *best_x = candidate;
+            *best_y = resolved_y;
             matched = true;
         }
     }
@@ -564,13 +565,14 @@ extern "C" int minish_hud_obj_x_provider(int oam_index, std::uint16_t attr0,
         if (cache->action > 0) *out_x = cache->out_x;
         return cache->action;
     }
-    auto finish = [&](int action, int x) {
+    auto finish = [&](int action, int x, int y = 0) {
         if (action > 0) *out_x = x;
         if (cache) {
             cache->attr0 = attr0;
             cache->attr1 = attr1;
             cache->attr2 = attr2;
             cache->out_x = x;
+            cache->out_y = y;
             cache->action = action;
             cache->generation = g_obj_x_cache_generation;
         }
@@ -613,7 +615,9 @@ extern "C" int minish_hud_obj_x_provider(int oam_index, std::uint16_t attr0,
         const int x = raw_x + (right_hud
             ? static_cast<int>(g_ws_extra_right)
             : -static_cast<int>(g_ws_extra_left));
-        return finish(1, x);
+        const int y = raw_y + (element_y >= 128
+            ? static_cast<int>(g_extra_bottom) : -static_cast<int>(g_extra_top));
+        return finish(1, x, y);
     }
 
     // World OBJ X is stored as unsigned 9-bit OAM. Native hardware interprets
@@ -624,23 +628,70 @@ extern "C" int minish_hud_obj_x_provider(int oam_index, std::uint16_t attr0,
     // pieces without changing ordinary 0..255 sprites.
     int best_score = 0x7FFFFFFF;
     int best_x = raw_x;
+    int best_y = raw_y;
     for (int index = 0; index < 8; ++index) {
         const std::uint32_t entity = index == 0
             ? kPlayerEntity
             : kAuxPlayerEntities + static_cast<std::uint32_t>(
                 (index - 1) * kEntitySize);
         match_world_entity_x(
-            bus, entity, raw_x, raw_y, &best_score, &best_x);
+            bus, entity, raw_x, raw_y, &best_score, &best_x, &best_y);
     }
     for (int index = 0; index < 72; ++index) {
         match_world_entity_x(
             bus, kEntities + static_cast<std::uint32_t>(index * kEntitySize),
-            raw_x, raw_y, &best_score, &best_x);
+            raw_x, raw_y, &best_score, &best_x, &best_y);
     }
     if (best_score != 0x7FFFFFFF) {
-        return finish(1, best_x);
+        return finish(1, best_x, best_y);
     }
     return finish(0, 0);
+}
+
+
+extern "C" int minish_obj_y_provider(int index, std::uint16_t a0,
+                                     std::uint16_t a1, std::uint16_t a2, int* out) {
+    if (!out || index < 0 || index >= 128) return 0;
+    int unused = 0;
+    if (minish_hud_obj_x_provider(index, a0, a1, a2, &unused) <= 0) return 0;
+    *out = g_obj_x_cache[static_cast<std::size_t>(index)].out_y;
+    return 1;
+}
+
+bool hud_sample(int x, int y, unsigned flags) {
+    return (!(flags & 0x10u) && x >= 0 && x < 96 && y >= 8 && y < 32) ||
+        (!(flags & 0x80u) && x >= 200 && x < 232 && y >= 128 && y < 144) ||
+        (!(flags & 0x40u) && x >= 192 && x < 232 && y >= 144 && y < 160);
+}
+
+extern "C" int minish_hud_xy_provider(int bg, int x, int y, int* sx, int* sy) {
+    if (bg != 0 || !sx || !sy) return 0;
+    auto* bus = active_game_bus();
+    if (!bus) return 0;
+    refresh_scanline(bus, y);
+    if (g_state.message_active) return 0;
+    const int left = static_cast<int>(g_ws_extra_left);
+    const int right = static_cast<int>(g_ws_extra_right);
+    const int top = static_cast<int>(g_extra_top);
+    const int bottom = static_cast<int>(g_extra_bottom);
+    const unsigned flags = g_state.hud_hide_flags;
+    // The XY hook receives native-relative X; corner samples borrow the
+    // unchanged native HUD, including its source window masks.
+    if (top && y + top >= 8 && y + top < 32 &&
+        hud_sample(x + left, y + top, flags)) {
+        *sx = x + left; *sy = y + top; return 1;
+    }
+    if (bottom && y - bottom >= 128 &&
+        hud_sample(x - right, y - bottom, flags)) {
+        *sx = x - right; *sy = y - bottom; return 1;
+    }
+    int old_x = 0;
+    const int action = minish_hud_bg_x_provider(bg, x + left, y, &old_x);
+    if (((top && y < 32) || (bottom && y >= 128)) &&
+        (hud_sample(x, y, flags) || (action > 0 && hud_sample(old_x, y, flags))))
+        return -1;
+    if (action > 0) { *sx = old_x; *sy = y; }
+    return action;
 }
 
 }  // namespace
@@ -663,4 +714,23 @@ void install_extended_view(std::uint32_t, std::uint32_t) {
         "[minish:view] authentic room-map margin source enabled\n");
 }
 
+}  // namespace minish
+
+namespace minish {
+void update_extended_view(const gbarecomp::ExtendedViewFrameInfo* frame) {
+    if (!frame) return;
+    g_extra_top = frame->extra_top;
+    g_extra_bottom = frame->extra_bottom;
+    const bool vertical = (g_extra_top | g_extra_bottom) != 0;
+    if (g_state_epoch != frame->state_epoch) {
+        g_state_epoch = frame->state_epoch;
+        g_state.bus = nullptr;
+    }
+    if (!g_runtime_bus_read_override || g_runtime_bus_read_override == &minish_clip_read)
+        g_runtime_bus_read_override = vertical ? &minish_clip_read : nullptr;
+    gba::g_ws_bg_x_provider = vertical ? nullptr : &minish_hud_bg_x_provider;
+    gba::g_ws_bg_xy_provider = vertical ? &minish_hud_xy_provider : nullptr;
+    gba::g_ws_bg_xy_provider_layers = 1u;
+    gba::g_ws_obj_attr_y_provider = vertical ? &minish_obj_y_provider : nullptr;
+}
 }  // namespace minish

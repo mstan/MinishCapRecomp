@@ -1,0 +1,48 @@
+plugins {
+    id "com.android.application"
+}
+
+def gameRoot = rootDir.parentFile
+def pick = { String prop, String env, File fallback ->
+    def value = providers.gradleProperty(prop).orNull ?: System.getenv(env)
+    return value ? new File(value) : fallback
+}
+def engineRoot = pick("gbarecompRoot", "GBARECOMP_ROOT", new File(gameRoot, "gbarecomp"))
+def uiRoot = pick("recompUiRoot", "RECOMP_UI_ROOT", new File(gameRoot, "recomp-ui"))
+
+ext.gbaGame = [
+    applicationId : "com.mstan.minishcaprecomp",
+    versionCode   : 7,
+    versionName   : "0.0.7",
+    title         : "The Legend of Zelda: The Minish Cap",
+    romLabel      : "The Minish Cap (USA) ROM",
+    romSha1       : ["b4bd50e4131b027c334547b4524e2dbbd4227130"],
+    romSize       : 16777216,
+    romFile       : "minishcap_usa.gba",
+    biosRequired  : true,
+    // Configuration changes stay in the existing shared resizable Activity.
+    orientation   : "any",
+    payloadVersion: "1",
+    variant       : "minish_cap",
+    gameToml      : new File(rootDir, "game_android.toml"),
+    gameRoot      : gameRoot,
+    engineRoot    : engineRoot,
+    recompUiRoot  : uiRoot,
+    nativeJobs    : 1,
+    releaseAbis   : ["arm64-v8a"],
+    cmakeArguments: ["-DBUILD_TESTING=OFF"],
+    payloadDirs   : [
+        [from: new File(gameRoot, "mods/preloaded"), into: "mods"],
+        [from: new File(uiRoot, "assets/common"), into: "assets"],
+        [from: new File(uiRoot, "assets/consoles/gba"), into: "assets"],
+        [from: new File(gameRoot, "recomp/launcher"), into: "assets/img"],
+        [from: new File(gameRoot, "LICENSE"), into: "licenses/minish-cap"],
+        [from: new File(engineRoot, "LICENSE"), into: "licenses/gbarecomp"],
+        [from: new File(engineRoot, "THIRD_PARTY_ATTRIBUTION.md"), into: "licenses/gbarecomp"],
+        [from: new File(engineRoot, "third_party/hqx"), into: "licenses/hqx-source"],
+        [from: new File(uiRoot, "LICENSE"), into: "licenses/recomp-ui"],
+        [from: new File(engineRoot, "platform/android/third_party/SDL/LICENSE.txt"), into: "licenses/SDL"],
+    ],
+]
+
+apply from: new File(engineRoot, "platform/android/gbarecomp-app.gradle")
