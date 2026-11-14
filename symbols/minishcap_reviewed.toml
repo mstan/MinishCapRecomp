@@ -15,6 +15,16 @@
 [identity]
 sha1 = "b4bd50e4131b027c334547b4524e2dbbd4227130"
 
+# CollideAll calls this local ARM helper from the IWRAM copy. The original
+# symbol import exposes CollideAll but omits its private CalcCollision entry.
+# Use its real copied address; the preceding three words are literal data,
+# so this is an ordinary callee entry, not a blanket resume range.
+[[extra_func]]
+addr = 0x03005B0C
+mode = "arm"
+name = "ram_CalcCollision"
+note = "Exact USA IWRAM copy of arm_CalcCollision at 0x080B1D98 (iwram_funcs code_copy)."
+
 # Interrupt/frame presentation may resume the copied ARM renderer at any
 # aligned instruction, not only its named entries. These contiguous draw
 # helpers run from arm_DrawEntities to the next sub_080B299C entry in the
