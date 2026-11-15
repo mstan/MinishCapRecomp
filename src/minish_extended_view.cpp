@@ -195,6 +195,16 @@ std::uint32_t rd32(gba::GbaBus* bus, std::uint32_t addr) {
            (static_cast<std::uint32_t>(rd16(bus, addr + 2u)) << 16);
 }
 
+// Exact USA gMain imported from zeldaret/tmc. Only TASK_GAME's main
+// state owns authored room margins. GAMEMAIN_SUBTASK is a full-screen menu;
+// dialogue and room cutscenes retain the ordinary room presentation.
+bool native_scene() {
+    auto* bus = active_game_bus();
+    constexpr std::uint32_t kMain = 0x03001000u;
+    return !bus || rd8(bus, kMain + 2u) != 2u ||
+           rd8(bus, kMain + 3u) != 2u || rd8(bus, kMain + 4u) == 7u;
+}
+
 int bg_for_settings(std::uint32_t settings) {
     // Screen::bg0/bg1/bg2/bg3 are twelve-byte records at these offsets.
     constexpr std::uint32_t offsets[] = {0x08u, 0x14u, 0x20u, 0x2Cu};
@@ -717,6 +727,14 @@ void install_extended_view(std::uint32_t, std::uint32_t) {
 }  // namespace minish
 
 namespace minish {
+void configure_scene_presentation(gbarecomp::RunOptions& options) {
+    options.presentation_request = [](gbarecomp::RunOptions::PresentationRequest* request) {
+        if (!request) return;
+        request->native_view = native_scene();
+        request->anchor_top = request->native_view;
+    };
+}
+
 void update_extended_view(const gbarecomp::ExtendedViewFrameInfo* frame) {
     if (!frame) return;
     g_extra_top = frame->extra_top;

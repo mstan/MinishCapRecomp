@@ -87,6 +87,7 @@ int minish_main(int argc, char** argv) {
     opts.resize_driven_view    = true;
     opts.extended_view_init    = &minish::install_extended_view;
     opts.extended_view_frame   = &minish::update_extended_view;
+    minish::configure_scene_presentation(opts);
     opts.launcher_expose_widescreen = false;
     opts.launcher_expose_adaptive_view = false;
     opts.launcher_region    = "USA";
