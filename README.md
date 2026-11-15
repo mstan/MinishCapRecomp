@@ -55,6 +55,29 @@ redistributed**; you supply your own legally-dumped copy.
 The runtime **refuses to launch on an unrecognized ROM** — the SHA-1 must match.
 Save chip: EEPROM. (Other regions can be added by checksum in `config/<region>.toml`.)
 
+## Definitive Edition 1.4 mod
+
+**Definitive Edition 1.4 by Zeldafangirl** is an optional package in Mods,
+disabled by default. Supply the original USA ROM above and select the exact
+`MinishCapDefinitiveEdition_USA1.4.ips` from the author's
+[patch release](https://www.romhacking.net/hacks/9976/). The patch is not bundled.
+Its SHA-256 must be
+`c96b61dff8563d4b9e1fe5730c985f1523aca57f89a6f0a4655b11313c6c24b2`.
+This integration supports that USA version; it does not accept arbitrary patches
+or prepatched cartridges. Turn the package off to play the original game.
+
+The complete patch includes quick-item wheels, difficulty options, expanded
+wallets and the four-digit rupee display, and its other gameplay adjustments.
+Hold L or R for the corresponding item wheel. L+R changes which equipped slot
+future wheel selections target. In file-selection Options, A confirms and saves
+a difficulty change; B cancels it. SELECT opens the map after Link has acquired
+the normal map item, and B exits the map or inventory.
+
+Ordinary native progress uses `<rom>.sav`. With the package enabled, its default
+is `<rom>.definitive-1-4.sav`; the launcher Save row and import/clear actions
+follow that selection. An explicitly configured save path remains an intentional
+override. Adaptive Widescreen can be enabled independently.
+
 ## Quick start
 
 1. Download the latest `MinishCapRecomp-windows-x64` zip from
@@ -198,7 +221,7 @@ toolchain (`gcc`/`g++`), CMake 3.16+, Ninja, and SDL2 (mingw64 package). Builds
 are invoked from PowerShell with the mingw64 toolchain on `PATH`.
 
 **1. Clone this repo next to `gbarecomp`** (it builds against the sibling engine
-checkout on `main`):
+checkout with the native-program profile support used by this title):
 
 ```
 git clone https://github.com/mstan/gbarecomp.git
@@ -206,22 +229,27 @@ git clone https://github.com/mstan/MinishCapRecomp.git
 cd MinishCapRecomp
 ```
 
-**2. Supply your ROM** at `roms/minishcap_usa.gba` (SHA-1 above). ROMs are
-gitignored and never committed.
+**2. Supply your ROM** at `roms/minishcap_usa.gba` (SHA-1 above), the normal
+GBA BIOS, and the exact author USA1.4 IPS described above. Inputs and generated
+code are local build data and must not be committed.
 
 **3. Recompile + build.** The committed `symbols/` map is the importer output, so
 you can regenerate the C and build directly:
 
 ```
 # from PowerShell, mingw64 on PATH
-gba_recompile --rom roms/minishcap_usa.gba --config symbols/minishcap.toml --out generated
+python tools/generate_definitive14.py --compiler ../gbarecomp/build/gba_recompile.exe --rom roms/minishcap_usa.gba --ips patches/MinishCapDefinitiveEdition_USA1.4.ips
 cmake -S . -B build -G Ninja -DGBARECOMP_ROOT=../gbarecomp
 cmake --build build --target MinishCapRecomp
 ```
 
 (`gba_recompile` is built from the `gbarecomp` checkout; see that repo's README.)
-The recompiler emits deterministic parallel translation units; current
-gbarecomp also rejects the retired monolithic `recompiled.cpp` output.
+The helper verifies both exact inputs, generates the original program plus a
+separately prefixed complete Definitive Edition program, and includes the
+reviewed copied-code metadata. It leaves the original ROM unchanged. The
+recompiler emits deterministic parallel translation units; current gbarecomp
+also rejects the retired monolithic `recompiled.cpp` output. Compilation links
+both programs so the mod can be selected without rebuilding.
 
 ## License
 

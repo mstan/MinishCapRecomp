@@ -1,0 +1,33 @@
+format_version = 1
+id = "minish-cap.gameplay.definitive-edition"
+version = "1.4.0"
+name = "Minish Cap Definitive Edition 1.4"
+author = "mstan"
+description = "Optional integration of the complete USA Definitive Edition 1.4 patch. Requires its exact separately supplied IPS."
+license = "MIT"
+resolver = "declarative"
+save_compatibility = "isolated"
+
+[[target]]
+game_id = "minish-cap-us"
+rom_sha1 = "b4bd50e4131b027c334547b4524e2dbbd4227130"
+
+[[feature]]
+id = "definitive-edition"
+name = "Definitive Edition 1.4"
+description = "Quick item swapping, difficulty options and the complete 1.4 quality-of-life bundle. Uses separate default native saves; stock remains available when disabled."
+group = "Gameplay"
+default_enabled = false
+
+[[plugin]]
+feature = "definitive-edition"
+id = "minish-cap.definitive-edition-1-4"
+
+[[asset]]
+feature = "definitive-edition"
+id = "usa-1-4-patch"
+name = "Definitive Edition 1.4 USA IPS"
+sha1 = "1778b00b1595f46cd7cb146e952352e3b6bbd818"
+size = 26644
+extensions = ["ips"]
+purpose = "Apply the exact USA 1.4 author patch to the verified original cartridge in memory. No patched ROM is written or imported."
