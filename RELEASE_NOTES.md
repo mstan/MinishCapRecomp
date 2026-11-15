@@ -1,9 +1,9 @@
-# MinishCapRecomp v0.0.9 - Windows x64
+# MinishCapRecomp v0.0.10 - Windows x64
 
-Adds optional support for the exact USA Definitive Edition 1.4 patch through Mods, including quick items, difficulty controls and the four-digit HUD. Supply the original supported USA ROM and the author-provided IPS separately. Definitive Edition remains disabled by default and uses a separate default native-save path when enabled.
+Cleared Rewind and Fast-forward bindings now remain unbound after reopening the launcher. This allows the controller triggers to operate GBA L/R without an unexpected Assist action. Reset Assist Controls still restores the original defaults.
 
-Corrects a copied ARM collision helper used by native stock and Definitive Edition gameplay. Scoped strict native checks and current-build continuation passed for both programs. Definitive Edition controls and adaptive Fit/HUD presentation passed visual checks.
+To swap the shoulders and triggers, open Controller ? Configure, bind GBA L/R to the left/right triggers, then bind Rewind/Fast-forward to the left/right shoulders under Assist Shortcuts. Keyboard and controller bindings remain independent.
 
-Fresh installations enable Adaptive Widescreen/Fit. Explicit saved mod and display choices remain authoritative. This Windows release preserves the production netplay-enabled build profile; no new netplay interoperability or performance claim is made. Other devices/platforms and unrelated feature holds remain separate.
+This update preserves the v0.0.9 stock and exact optional USA Definitive Edition 1.4 gameplay programs, production netplay-enabled build profile and separate default native-save paths. Fresh installations enable Adaptive Widescreen/Fit; existing saved choices remain authoritative. Definitive Edition remains off by default.
 
-ROM, BIOS, author IPS, native saves, user settings and private QA data are not included. The separate Android release channel remains independent.
+ROM, BIOS, author IPS, saves, user profiles and private QA data are not included. Other platforms/devices and separate feature holds remain independent.
