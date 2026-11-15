@@ -6,4 +6,6 @@ To swap the shoulders and triggers, open Controller > Configure, bind GBA L/R to
 
 This update preserves the v0.0.9 stock and exact optional USA Definitive Edition 1.4 gameplay programs, production netplay-enabled build profile and separate default native-save paths. Fresh installations enable Adaptive Widescreen/Fit; existing saved choices remain authoritative. Definitive Edition remains off by default.
 
+The bundled TinyCC 0.9.27 compiler includes its matching license text.
+
 ROM, BIOS, author IPS, saves, user profiles and private QA data are not included. Other platforms/devices and separate feature holds remain independent.

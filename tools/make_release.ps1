@@ -114,6 +114,9 @@ foreach ($g in $games) {
   # gaps via tcc (overlay backend auto -> tcc). See gbarecomp/tools/fetch_tcc.ps1.
   $engine = (Resolve-Path (Join-Path $PSScriptRoot '..\gbarecomp')).Path
   & (Join-Path $engine 'tools\fetch_tcc.ps1') -Toolchain (Join-Path $stage 'overlay_toolchain') -EngineRoot $engine
+  # The fixed TinyCC 0.9.27 binary distribution omits its license copy.
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release-licenses\TinyCC-0.9.27-COPYING.txt') `
+    -Destination (Join-Path $stage 'overlay_toolchain\tcc\COPYING')
 
   # ROM SHA-1 from game.toml (best-effort; for the README only).
   $sha = ''
