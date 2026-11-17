@@ -1,0 +1,24 @@
+format_version = 1
+id = "minish-cap.tools.diagnostics"
+version = "1.0.0"
+name = "Gameplay Diagnostics"
+author = "mstan"
+description = "Record gameplay diagnostics and an input replay locally to help investigate problems. Turn this off to stop automatic recording."
+license = "MIT"
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "minish-cap-us"
+rom_sha1 = "b4bd50e4131b027c334547b4524e2dbbd4227130"
+
+[[feature]]
+id = "diagnostics"
+name = "Gameplay Diagnostics and Input Recording"
+description = "Save local diagnostics and an input replay for this session. Your saved On or Off choice is kept."
+group = "Tools"
+default_enabled = true
+
+[[plugin]]
+feature = "diagnostics"
+id = "minish-cap.diagnostics"

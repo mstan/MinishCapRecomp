@@ -154,9 +154,9 @@ int main(int argc, char** argv) {
         gbarecomp::mod_runtime_launcher_provider();
     constexpr std::size_t kExpectedCatalogEntries =
 #if MINISH_ENABLE_ZELDA1_FOREIGN_WORLD
-        3;
+        4;
 #else
-        2;
+        3;
 #endif
     if (!provider || provider->package_count(provider->ctx) != kExpectedCatalogEntries ||
         provider->feature_count(provider->ctx) != kExpectedCatalogEntries ||
@@ -195,8 +195,8 @@ int main(int argc, char** argv) {
                     provider->last_error(provider->ctx));
     }
 
-    RecompLauncherCModFeature feature{}, definitive{};
-    bool found_adaptive = false, found_definitive = false;
+    RecompLauncherCModFeature feature{}, definitive{}, diagnostics{};
+    bool found_adaptive = false, found_definitive = false, found_diagnostics = false;
 #if MINISH_ENABLE_ZELDA1_FOREIGN_WORLD
     RecompLauncherCModFeature zelda_feature{};
     bool found_zelda = false;
@@ -216,6 +216,11 @@ int main(int argc, char** argv) {
             definitive = candidate;
             found_definitive = true;
         }
+        if (std::string(candidate.package_id) == "minish-cap.tools.diagnostics" &&
+            std::string(candidate.id) == "diagnostics") {
+            diagnostics = candidate;
+            found_diagnostics = true;
+        }
 #if MINISH_ENABLE_ZELDA1_FOREIGN_WORLD
         if (std::string(candidate.package_id) ==
                 "minish-cap.foreign-world.zelda1" &&
@@ -231,12 +236,17 @@ int main(int argc, char** argv) {
 
     if (!found_definitive || definitive.enabled)
         return fail("release catalog did not expose disabled Definitive Edition");
+    if (provider->feature_resource_count &&
+        provider->feature_resource_count(provider->ctx, definitive.package_id, definitive.id) != 0)
+        return fail("built-in Definitive Edition still asks for an IPS resource");
     std::string patch_error;
     if (!provider->feature_enable(provider->ctx, definitive.package_id, definitive.id, 1) ||
-        gbarecomp::mod_runtime_commit({}, &patch_error) || patch_error.empty())
-        return fail("Definitive Edition accepted a missing exact patch asset");
+        !gbarecomp::mod_runtime_commit({}, &patch_error))
+        return fail("built-in Definitive Edition cannot commit without an IPS");
     if (!provider->feature_enable(provider->ctx, definitive.package_id, definitive.id, 0))
-        return fail("could not disable the failed Definitive Edition plan");
+        return fail("could not disable Definitive Edition");
+    if (!found_diagnostics || !diagnostics.enabled)
+        return fail("visible Diagnostics feature is not enabled by default");
 
 #if MINISH_ENABLE_ZELDA1_FOREIGN_WORLD
     if (!found_zelda || zelda_feature.enabled) {
@@ -277,6 +287,35 @@ int main(int argc, char** argv) {
     gbarecomp::mod_runtime_activate_plugins();
     if (g_active || gba_mod_adaptive_view_enabled())
         return fail("disabled adaptive view did not restore native view");
+
+    // Exercise the real title plugin and persisted launcher selections. The
+    // independent recording toggle must not depend on Definitive Edition.
+    for (int selected : {1, 0, 1}) {
+        if (!provider->feature_enable(provider->ctx, diagnostics.package_id, diagnostics.id, selected) ||
+            !provider->commit(provider->ctx, nullptr))
+            return fail("could not commit Diagnostics selection");
+        gbarecomp::mod_runtime_activate_plugins();
+        if (gba_mod_diagnostic_replay_enabled() != selected)
+            return fail("Diagnostics plugin did not honor selection");
+        if (!gbarecomp::mod_runtime_initialize(root, "minish-cap-us",
+                "b4bd50e4131b027c334547b4524e2dbbd4227130", &error))
+            return fail("could not reopen persisted catalog");
+        provider = gbarecomp::mod_runtime_launcher_provider();
+        bool matched = false;
+        for (int i = 0; i < provider->feature_count(provider->ctx); ++i) {
+            RecompLauncherCModFeature current{};
+            if (provider->feature_get(provider->ctx, i, &current) &&
+                std::string(current.package_id) == diagnostics.package_id &&
+                std::string(current.id) == diagnostics.id) {
+                matched = current.enabled == selected;
+            }
+        }
+        if (!matched || !provider->commit(provider->ctx, nullptr))
+            return fail("Diagnostics selection was not persisted");
+        gbarecomp::mod_runtime_activate_plugins();
+        if (gba_mod_diagnostic_replay_enabled() != selected)
+            return fail("reopened Diagnostics selection was not activated");
+    }
 
     fs::remove_all(root, ec);
     std::cout << "Minish Cap preloaded mods: release catalog, archive install, "

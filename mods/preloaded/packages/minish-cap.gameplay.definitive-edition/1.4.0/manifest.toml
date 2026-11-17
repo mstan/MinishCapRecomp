@@ -2,9 +2,9 @@ format_version = 1
 id = "minish-cap.gameplay.definitive-edition"
 version = "1.4.0"
 name = "Minish Cap Definitive Edition 1.4"
-author = "mstan"
-description = "Optional integration of the complete USA Definitive Edition 1.4 patch. Requires its exact separately supplied IPS."
-license = "MIT"
+author = "Zeldafangirl (Definitive Edition); mstan (native integration)"
+description = "Built-in native adaptation of Zeldafangirl's Definitive Edition 1.4. Enable this mod with your original USA cartridge; no IPS file is needed."
+license = "MIT (native integration)"
 resolver = "declarative"
 save_compatibility = "isolated"
 
@@ -22,12 +22,3 @@ default_enabled = false
 [[plugin]]
 feature = "definitive-edition"
 id = "minish-cap.definitive-edition-1-4"
-
-[[asset]]
-feature = "definitive-edition"
-id = "usa-1-4-patch"
-name = "Definitive Edition 1.4 USA IPS"
-sha1 = "1778b00b1595f46cd7cb146e952352e3b6bbd818"
-size = 26644
-extensions = ["ips"]
-purpose = "Apply the exact USA 1.4 author patch to the verified original cartridge in memory. No patched ROM is written or imported."
