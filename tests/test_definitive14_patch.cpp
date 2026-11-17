@@ -12,19 +12,21 @@ std::vector<uint8_t> read(const char* path) {
 }
 int main(int argc,char** argv) {
     CHECK(argc==3);
-    const auto stock=read(argv[1]), exact=read(argv[2]);
-    auto image=stock, patch=exact; const char* error=nullptr;
-    CHECK(minish::apply_definitive14_patch(image.data(),image.size(),patch.data(),patch.size(),&error));
+    const auto stock=read(argv[1]), expected=read(argv[2]);
+    auto image=stock; const char* error=nullptr;
+    CHECK(minish::prepare_definitive14_image(image.data(),image.size(),&error));
+    CHECK(image==expected);
     CHECK(gba::sha1(image.data(),image.size()).hex()=="5de00d88ecc367c9d374c6b2601caa51a17ca743");
     CHECK(std::vector<uint8_t>(image.begin(),image.begin()+0xC0)==std::vector<uint8_t>(stock.begin(),stock.begin()+0xC0));
-    image=stock; patch.back()^=1;
-    CHECK(!minish::apply_definitive14_patch(image.data(),image.size(),patch.data(),patch.size(),&error));
-    CHECK(image==stock);
-    patch=exact; image=stock; image[0x100]^=1; const auto wrong=image;
-    CHECK(!minish::apply_definitive14_patch(image.data(),image.size(),patch.data(),patch.size(),&error));
+    const auto prepared=image;
+    CHECK(!minish::prepare_definitive14_image(image.data(),image.size(),&error));
+    CHECK(image==prepared);
+    image=stock; image[0x100]^=1; const auto wrong=image;
+    CHECK(!minish::prepare_definitive14_image(image.data(),image.size(),&error));
     CHECK(image==wrong);
     image=stock;
-    CHECK(!minish::apply_definitive14_patch(image.data(),image.size(),patch.data(),patch.size()-1,&error));
+    CHECK(!minish::prepare_definitive14_image(image.data(),image.size()-1,&error));
     CHECK(image==stock);
-    std::puts("Exact Definitive Edition patch/output/header and wrong asset/cartridge/size rejection PASS");
+    CHECK(!minish::prepare_definitive14_image(nullptr,stock.size(),&error));
+    std::puts("Built-in DE1.4 exact image/header, no IPS, wrong cartridge/size/repeated application rejection PASS");
 }

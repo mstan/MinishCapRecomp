@@ -1,9 +1,20 @@
-# MinishCapRecomp v0.0.11 - Windows x64
+# MinishCapRecomp v0.0.12 - Windows x64
 
-Controller > Configure now shows Host Shortcuts for Rewind and Fast-forward when optional Assist tools are disabled. Keyboard and controller bindings can be captured, reassigned, cleared and restored to their defaults. Explicitly cleared bindings remain unbound after reopening.
+Definitive Edition 1.4 is now built in. Choose your original USA cartridge,
+open **Mods**, enable **Definitive Edition 1.4**, and press **Play**. No IPS file
+or patched cartridge is needed. The enhancement is by **Zeldafangirl**; this
+release integrates its USA 1.4 native program and data.
 
-To use triggers for GBA L/R and shoulders for host controls, bind GBA L/R to the left/right triggers, then assign Rewind/Fast-forward to the left/right shoulders under Host Shortcuts. Backspace clears a binding during capture.
+Definitive Edition remains optional and off by default. Its item wheels,
+difficulty settings and other adjustments are unchanged. Its default native
+save stays separate from the original game's save. Explicit save paths and
+existing mod choices are retained.
 
-This update preserves the existing stock and exact optional USA Definitive Edition 1.4 gameplay programs, production netplay-enabled profile and separate native-save paths. Fresh installations enable Adaptive Widescreen/Fit; explicit saved choices remain authoritative. Definitive Edition remains off by default.
+**Gameplay Diagnostics and Input Recording** now has its own visible Mods
+checkbox. It starts on and remembers a saved On or Off choice. Recordings stay
+local unless you choose to share them.
 
-The bundled TinyCC compiler includes its full matching license. ROM, BIOS, IPS, saves, user profiles and private QA data are not distributed.
+Adaptive Widescreen/Fit remains enabled for new installations. Existing display
+and controller settings, including cleared host shortcuts, are retained.
+
+Original enhancement: https://www.romhacking.net/hacks/9976/

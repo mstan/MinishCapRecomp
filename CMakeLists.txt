@@ -64,7 +64,8 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/recompiled.cpp")
         "Stale monolithic generated/recompiled.cpp found. Regenerate with "
         "symbols/minishcap.toml and the current gbarecomp before building.")
 endif()
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/definitive14/de14_dispatch_table.cpp")
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/definitive14/de14_dispatch_table.cpp"
+   OR NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/definitive14/de14_rom_data.h")
     message(FATAL_ERROR
         "The separate Definitive Edition USA1.4 native program is missing. "
         "Run tools/generate_definitive14.py with the current gba_recompile, "
@@ -82,6 +83,7 @@ set(MINISH_RUNTIME_SOURCES
     src/mods/minish_adaptive_view_plugin.cpp
     src/mods/minish_definitive14.cpp
     src/mods/minish_definitive14_patch.cpp
+    src/mods/minish_diagnostics.cpp
     ${MINISH_GENERATED_SOURCES}
 )
 
@@ -116,6 +118,7 @@ target_include_directories(MinishCapRecomp PRIVATE
     "${GBARECOMP_ROOT}/src/runtime"
     "${GBARECOMP_ROOT}/src/debug"
     src
+    "${CMAKE_CURRENT_SOURCE_DIR}/generated/definitive14"
 )
 
 target_link_libraries(MinishCapRecomp PRIVATE
@@ -170,8 +173,8 @@ if(GBAGAME_RECOMP_UI)
     set_property(SOURCE src/main.cpp APPEND PROPERTY COMPILE_DEFINITIONS GBAGAME_RECOMP_UI)
 endif()
 
-# Ship only the game-owned, disabled-by-default adaptive-view package beside
-# normal executables. User-installed .gbamod archives join this same catalog.
+# Ship the game-owned feature catalog beside normal executables.
+# User-installed .gbamod archives join this same catalog.
 # The Zelda checkpoint manifest lives outside this catalog and is staged only
 # by a developer build that also contains the corresponding plugin.
 set(MINISH_PRELOADED_MODS "${CMAKE_CURRENT_SOURCE_DIR}/mods/preloaded")
@@ -201,7 +204,8 @@ if(BUILD_TESTING)
     add_executable(minish_definitive14_patch_test
         tests/test_definitive14_patch.cpp src/mods/minish_definitive14_patch.cpp
         "${GBARECOMP_ROOT}/src/gba/sha1.cpp")
-    target_include_directories(minish_definitive14_patch_test PRIVATE src "${GBARECOMP_ROOT}/src/gba")
+    target_include_directories(minish_definitive14_patch_test PRIVATE src "${GBARECOMP_ROOT}/src/gba"
+        "${CMAKE_CURRENT_SOURCE_DIR}/generated/definitive14")
     add_library(minish_foreign_world_core STATIC
         src/foreign_worlds/foreign_world.cpp)
     target_include_directories(minish_foreign_world_core PUBLIC src)
@@ -402,6 +406,7 @@ if(BUILD_TESTING)
     if(EXISTS "${RECOMP_UI_ROOT}/src/recomp_launcher.h")
         add_executable(minish_preloaded_mods_test
             tests/test_preloaded_mods.cpp
+            src/mods/minish_diagnostics.cpp
             "${GBARECOMP_ROOT}/src/runtime/mod_runtime.cpp"
             "${GBARECOMP_ROOT}/src/runtime/codebreaker.cpp"
             "${GBARECOMP_ROOT}/src/runtime/mod_function_hooks.cpp"

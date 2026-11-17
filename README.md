@@ -57,14 +57,15 @@ Save chip: EEPROM. (Other regions can be added by checksum in `config/<region>.t
 
 ## Definitive Edition 1.4 mod
 
-**Definitive Edition 1.4 by Zeldafangirl** is an optional package in Mods,
-disabled by default. Supply the original USA ROM above and select the exact
-`MinishCapDefinitiveEdition_USA1.4.ips` from the author's
-[patch release](https://www.romhacking.net/hacks/9976/). The patch is not bundled.
-Its SHA-256 must be
-`c96b61dff8563d4b9e1fe5730c985f1523aca57f89a6f0a4655b11313c6c24b2`.
-This integration supports that USA version; it does not accept arbitrary patches
-or prepatched cartridges. Turn the package off to play the original game.
+**Definitive Edition 1.4 by Zeldafangirl** is built in as an optional native
+mod, disabled by default. Select your original USA cartridge, open **Mods**,
+enable **Definitive Edition 1.4**, and press **Play**. No IPS file or patched
+cartridge is needed. Turn the mod off to play the original game.
+
+The original enhancement is credited to Zeldafangirl:
+[Definitive Edition release](https://www.romhacking.net/hacks/9976/).
+This integration supports its USA 1.4 version; arbitrary patches and prepatched
+cartridges are not accepted.
 
 The complete patch includes quick-item wheels, difficulty options, expanded
 wallets and the four-digit rupee display, and its other gameplay adjustments.
@@ -77,6 +78,13 @@ Ordinary native progress uses `<rom>.sav`. With the package enabled, its default
 is `<rom>.definitive-1-4.sav`; the launcher Save row and import/clear actions
 follow that selection. An explicitly configured save path remains an intentional
 override. Adaptive Widescreen can be enabled independently.
+
+## Gameplay diagnostics
+
+**Mods > Gameplay Diagnostics and Input Recording** records local gameplay
+diagnostics and an input replay. It starts enabled, and remembers an explicit
+On or Off choice independently of Definitive Edition. Diagnostic files remain
+local unless you choose to share them.
 
 ## Quick start
 
@@ -230,7 +238,9 @@ cd MinishCapRecomp
 ```
 
 **2. Supply your ROM** at `roms/minishcap_usa.gba` (SHA-1 above), the normal
-GBA BIOS, and the exact author USA1.4 IPS described above. Inputs and generated
+GBA BIOS, and the exact author USA1.4 IPS as a developer input. The generator
+verifies IPS SHA-256 `c96b61dff8563d4b9e1fe5730c985f1523aca57f89a6f0a4655b11313c6c24b2`.
+Players do not need that file. Inputs and generated
 code are local build data and must not be committed.
 
 **3. Recompile + build.** The committed `symbols/` map is the importer output, so
